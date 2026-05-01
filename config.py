@@ -5,7 +5,7 @@ All tuneable settings live here so you never have to dig through other files.
 
 import os
 
-VERSION = "5.5.2"
+VERSION = "5.5.3"
 
 # =============================================================================
 # Paths

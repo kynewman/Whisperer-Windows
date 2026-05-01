@@ -37,7 +37,7 @@ export type DictationBackup = {
 };
 export type VocabularySnapshot = {
   wordCount: number;
-  words: Array<{ word: string; count: number; source?: string; last_seen?: string }>;
+  words: Array<{ word: string; count: number; source?: string; context?: string; last_seen?: string }>;
   rules: Array<{ id: number; match_text: string; replace_with: string; enabled: number; whole_word: number; case_sensitive: number }>;
   error?: string;
 };
@@ -435,7 +435,19 @@ export default function App() {
 
   const startWindowDrag = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("[data-no-drag], button, input, select, textarea, a, [role='switch']")) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-no-drag], button, input, select, textarea, a, [role='switch']")) return;
+
+    const scroller = target.closest(".scroll") as HTMLElement | null;
+    if (scroller) {
+      const rect = scroller.getBoundingClientRect();
+      const styles = window.getComputedStyle(scroller);
+      const canScrollY = scroller.scrollHeight > scroller.clientHeight && styles.overflowY !== "hidden";
+      const canScrollX = scroller.scrollWidth > scroller.clientWidth && styles.overflowX !== "hidden";
+      const gutter = 18;
+      if ((canScrollY && event.clientX >= rect.right - gutter) || (canScrollX && event.clientY >= rect.bottom - gutter)) return;
+    }
+
     window.whisperer?.startDrag?.();
   };
 

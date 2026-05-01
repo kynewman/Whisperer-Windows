@@ -173,13 +173,18 @@ def get_words(limit: int = 500, search: str = "") -> List[dict]:
     cursor = conn.cursor()
     params = []
     query = """
-        SELECT word, count, source, last_seen
+        SELECT word, count, source, context, last_seen
         FROM words
     """
     search = search.strip()
     if search:
-        query += " WHERE word LIKE ?"
-        params.append(f"%{search.lower()}%")
+        pattern = f"%{search.lower()}%"
+        query += """
+            WHERE lower(word) LIKE ?
+               OR lower(COALESCE(source, '')) LIKE ?
+               OR lower(COALESCE(context, '')) LIKE ?
+        """
+        params.extend([pattern, pattern, pattern])
     query += " ORDER BY count DESC, last_seen DESC LIMIT ?"
     params.append(limit)
     cursor.execute(query, params)
@@ -267,18 +272,27 @@ def delete_replacement_rule(rule_id: int):
     _invalidate_caches()
 
 
-def get_replacement_rules(enabled_only: bool = False) -> List[dict]:
+def get_replacement_rules(enabled_only: bool = False, search: str = "") -> List[dict]:
     """Return replacement rules ordered longest-match first."""
     conn = _get_connection()
     cursor = conn.cursor()
+    clauses = []
+    params = []
     query = """
         SELECT id, match_text, replace_with, enabled, whole_word, case_sensitive
         FROM replacement_rules
     """
     if enabled_only:
-        query += " WHERE enabled = 1"
+        clauses.append("enabled = 1")
+    search = search.strip()
+    if search:
+        pattern = f"%{search.lower()}%"
+        clauses.append("(lower(match_text) LIKE ? OR lower(replace_with) LIKE ?)")
+        params.extend([pattern, pattern])
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY LENGTH(match_text) DESC, match_text ASC"
-    cursor.execute(query)
+    cursor.execute(query, params)
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows

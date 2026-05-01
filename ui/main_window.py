@@ -194,6 +194,10 @@ class Bridge(QObject):
     def vocabularySnapshot(self) -> str:
         return self._window.vocabulary_snapshot_json()
 
+    @pyqtSlot(str, result=str)
+    def searchVocabulary(self, query: str) -> str:
+        return self._window.vocabulary_snapshot_json(query)
+
     @pyqtSlot(result=str)
     def historySnapshot(self) -> str:
         return self._window.history_snapshot_json()
@@ -305,6 +309,7 @@ _BRIDGE_SHIM = r"""
         engineState: function() { return callResult("engineState"); },
         appSnapshot: function() { return callResult("appSnapshot"); },
         vocabularySnapshot: function() { return callResult("vocabularySnapshot"); },
+        searchVocabulary: function(query) { return callResult("searchVocabulary", query || ""); },
         historySnapshot: function() { return callResult("historySnapshot"); },
         modesSnapshot: function() { return callResult("modesSnapshot"); },
         micLevel: function() { return callResult("micLevel"); },
@@ -719,8 +724,8 @@ class MainWindow(QMainWindow):
     def mic_level_json(self) -> str:
         return json.dumps(self._mic_level_payload(), separators=(",", ":"))
 
-    def vocabulary_snapshot_json(self) -> str:
-        return json.dumps({"vocabulary": self._vocabulary_payload()}, separators=(",", ":"))
+    def vocabulary_snapshot_json(self, search: str = "") -> str:
+        return json.dumps({"vocabulary": self._vocabulary_payload(search)}, separators=(",", ":"))
 
     def history_snapshot_json(self) -> str:
         return json.dumps({"history": self._history_payload()}, separators=(",", ":"))
@@ -1174,13 +1179,14 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         except Exception:
             return {"startup": [], "dictation": [], "other": []}
 
-    def _vocabulary_payload(self) -> dict[str, Any]:
+    def _vocabulary_payload(self, search: str = "") -> dict[str, Any]:
         try:
             from core.dictionary import get_replacement_rules, get_word_count, get_words, init_db
 
             init_db()
-            rules = get_replacement_rules(enabled_only=False)
-            words = get_words(limit=500)
+            search = (search or "").strip()
+            rules = get_replacement_rules(enabled_only=False, search=search)
+            words = get_words(limit=500, search=search)
             return {
                 "wordCount": get_word_count(),
                 "words": words,

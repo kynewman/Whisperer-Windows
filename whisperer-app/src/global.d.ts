@@ -12,6 +12,7 @@ declare global {
       engineState?: () => Promise<string>;
       appSnapshot?: () => Promise<string>;
       vocabularySnapshot?: () => Promise<string>;
+      searchVocabulary?: (query: string) => Promise<string>;
       historySnapshot?: () => Promise<string>;
       modesSnapshot?: () => Promise<string>;
       micLevel?: () => Promise<string>;

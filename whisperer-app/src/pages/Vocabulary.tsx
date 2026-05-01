@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Btn, Card, Eyebrow, Icon, Input, SectionTitle, Stat } from "../primitives";
 import type { AppSnapshot, VocabularySnapshot } from "../App";
 
@@ -13,11 +13,33 @@ export default function VocabPage({
   const [newWord, setNewWord] = useState("");
   const [newMatch, setNewMatch] = useState("");
   const [newReplace, setNewReplace] = useState("");
+  const searchSeq = useRef(0);
   const deferredQ = useDeferredValue(q);
   const lc = deferredQ.toLowerCase();
+
+  useEffect(() => {
+    const query = deferredQ.trim();
+    const search = window.whisperer?.searchVocabulary;
+    if (!search) return;
+
+    const seq = searchSeq.current + 1;
+    searchSeq.current = seq;
+    const timeout = window.setTimeout(() => {
+      search(query)
+        .then((raw) => {
+          if (searchSeq.current === seq) applySnapshot(raw);
+        })
+        .catch(() => {});
+    }, query ? 140 : 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [deferredQ, applySnapshot]);
   const words = useMemo(
     () => (vocabulary.words || []).filter(
-      (v) => !deferredQ || v.word.toLowerCase().includes(lc) || (v.source || "").toLowerCase().includes(lc)
+      (v) => !deferredQ
+        || v.word.toLowerCase().includes(lc)
+        || (v.source || "").toLowerCase().includes(lc)
+        || (v.context || "").toLowerCase().includes(lc)
     ),
     [vocabulary.words, deferredQ, lc]
   );
