@@ -298,6 +298,14 @@ class Bridge(QObject):
             value = value_json
         return self._window.set_setting(section, key, value)
 
+    @pyqtSlot(result=str)
+    def checkForUpdates(self) -> str:
+        return self._window.check_for_updates()
+
+    @pyqtSlot(result=str)
+    def installUpdate(self) -> str:
+        return self._window.install_update()
+
 
 _BRIDGE_SHIM = r"""
 (function() {
@@ -350,7 +358,9 @@ _BRIDGE_SHIM = r"""
         setShortcut: function(name, value) { return callResult("setShortcut", name, value); },
         setSetting: function(section, key, value) {
           return callResult("setSetting", section, key, JSON.stringify(value));
-        }
+        },
+        checkForUpdates: function() { return callResult("checkForUpdates"); },
+        installUpdate: function() { return callResult("installUpdate"); }
       };
       b.engineStateChanged.connect(function(state) {
         window.dispatchEvent(new CustomEvent("whisperer:engineState", { detail: state }));
@@ -713,6 +723,38 @@ class MainWindow(QMainWindow):
 
     def engine_state(self) -> str:
         return self._engine_state
+
+    def check_for_updates(self) -> str:
+        try:
+            from core.updater import check_for_update
+
+            return json.dumps(check_for_update().to_dict(), separators=(",", ":"))
+        except Exception as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "currentVersion": config.VERSION,
+                    "updateAvailable": False,
+                    "error": f"Could not check for updates: {exc}",
+                },
+                separators=(",", ":"),
+            )
+
+    def install_update(self) -> str:
+        try:
+            from core.updater import download_and_launch_update
+
+            payload = download_and_launch_update()
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "currentVersion": config.VERSION,
+                "updateAvailable": False,
+                "error": f"Could not install update: {exc}",
+            }
+        if payload.get("ok") and payload.get("shouldCloseApp"):
+            QTimer.singleShot(800, self.close)
+        return json.dumps(payload, separators=(",", ":"))
 
     def snapshot_json(self) -> str:
         self.settings = load_settings()

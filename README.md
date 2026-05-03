@@ -41,6 +41,15 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 5.5.5
+
+Whisperer 5.5.5 adds update checks in Configuration so the app can see the
+latest GitHub release and launch a downloaded Windows installer when a release
+asset is available.
+
+The live overlay update path now targets a 60 Hz feed cadence, and microphone
+capture uses smaller audio blocks so the waveform reacts with less visual lag.
+
 ## Version 5.5.4
 
 Whisperer 5.5.4 adds hosted speech-to-text backends for users who do not have a

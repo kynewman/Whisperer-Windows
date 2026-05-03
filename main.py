@@ -150,6 +150,7 @@ LONGFORM_RELEASE_DEBOUNCE_S = 0.035
 LONGFORM_LOCK_GRACE_S = 0.14
 LONGFORM_STOP_ARM_DEBOUNCE_S = 0.06
 LOADING_PREVIEW_HIDE_S = 1.4
+WAVEFORM_FEED_INTERVAL_MS = 16
 
 
 def _looks_silent(audio: np.ndarray, threshold: float = 0.0015) -> bool:
@@ -241,7 +242,7 @@ class WhisperApp:
         self._feed_waveform = self._feed_waveform
         self._waveform_timer = QTimer()
         self._waveform_timer.timeout.connect(self._feed_waveform)
-        self._waveform_timer.start(33)
+        self._waveform_timer.start(WAVEFORM_FEED_INTERVAL_MS)
 
     def _show_model_loading_overlay(self):
         if os.environ.get("WHISPERER_UI_LOADING_PREVIEW") == "1":

@@ -3,6 +3,20 @@ import { Btn, Card, Eyebrow, Icon, Input, KeyCombo, Row, SectionTitle, Select, T
 import { SHORTCUTS } from "../data";
 import type { AppSettings, Tweaks } from "../App";
 
+type UpdateInfo = {
+  ok?: boolean;
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+  releaseName?: string;
+  releaseUrl?: string;
+  publishedAt?: string;
+  body?: string;
+  asset?: { name?: string; size?: number };
+  error?: string;
+  shouldCloseApp?: boolean;
+};
+
 export default function ConfigPage({
   tweaks,
   setTweaks,
@@ -42,6 +56,10 @@ export default function ConfigPage({
   const [nvidiaApiKey, setNvidiaApiKey] = useState("");
   const [nvidiaKeyStatus, setNvidiaKeyStatus] = useState("");
   const nvidiaKeyMasked = apiKeys.nvidia?.masked || "";
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
 
   useEffect(() => {
     setSettings((current) => ({
@@ -203,6 +221,56 @@ export default function ConfigPage({
     closePurge();
   };
 
+  const parseUpdateInfo = (payload: string): UpdateInfo => {
+    try {
+      return JSON.parse(payload) as UpdateInfo;
+    } catch {
+      return { ok: false, error: "Update check returned an unreadable response." };
+    }
+  };
+
+  const checkUpdates = () => {
+    if (!window.whisperer?.checkForUpdates) {
+      setUpdateStatus("Update checks are not available in this build.");
+      return;
+    }
+    setCheckingUpdates(true);
+    setUpdateStatus("Checking GitHub...");
+    window.whisperer.checkForUpdates()
+      .then((payload) => {
+        const info = parseUpdateInfo(payload);
+        setUpdateInfo(info);
+        if (!info.ok) setUpdateStatus(info.error || "Could not check for updates.");
+        else if (info.updateAvailable) setUpdateStatus(`Version ${info.latestVersion || "latest"} is available.`);
+        else setUpdateStatus("Whisperer is up to date.");
+      })
+      .catch(() => setUpdateStatus("Could not check for updates."))
+      .finally(() => setCheckingUpdates(false));
+  };
+
+  const installUpdate = () => {
+    if (!window.whisperer?.installUpdate) return;
+    setInstallingUpdate(true);
+    setUpdateStatus("Downloading update...");
+    window.whisperer.installUpdate()
+      .then((payload) => {
+        const info = parseUpdateInfo(payload);
+        setUpdateInfo(info);
+        if (info.ok) {
+          setUpdateStatus("Installer launched. Whisperer will close so the update can finish.");
+        } else {
+          setUpdateStatus(info.error || "Could not install update.");
+          setInstallingUpdate(false);
+        }
+      })
+      .catch(() => {
+        setUpdateStatus("Could not install update.");
+        setInstallingUpdate(false);
+      });
+  };
+
+  const releaseNote = updateInfo?.body?.split("\n").find((line) => line.trim())?.trim();
+
   return (
     <div className="page-enter scroll page-shell">
       <div style={{ marginBottom: 22 }}>
@@ -222,6 +290,46 @@ export default function ConfigPage({
         <Row title="Density" subtitle="Slightly tighter spacing on smaller displays."
              control={<Select value={tweaks.density} onChange={(v) => setT("density", v as Tweaks["density"])} options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} width={160} />}
              divider={false} />
+      </Card>
+
+      <SectionTitle>Updates</SectionTitle>
+      <Card style={{ marginBottom: 18 }}>
+        <Row
+          title="GitHub releases"
+          subtitle={
+            updateInfo?.latestVersion
+              ? `Current ${updateInfo.currentVersion || "unknown"} · Latest ${updateInfo.latestVersion}`
+              : "Check GitHub for a newer Whisperer release."
+          }
+          control={
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <Btn size="sm" variant="secondary" onClick={checkUpdates} disabled={checkingUpdates || installingUpdate} icon="search">
+                {checkingUpdates ? "Checking" : "Check"}
+              </Btn>
+              <Btn
+                size="sm"
+                variant="accent"
+                onClick={installUpdate}
+                disabled={!updateInfo?.updateAvailable || checkingUpdates || installingUpdate}
+                icon="play"
+              >
+                {installingUpdate ? "Downloading" : "Update"}
+              </Btn>
+            </div>
+          }
+          divider={Boolean(updateStatus || releaseNote || updateInfo?.asset?.name)}
+        />
+        {(updateStatus || releaseNote || updateInfo?.asset?.name) && (
+          <div style={{ paddingTop: 12, display: "grid", gap: 8 }}>
+            {updateStatus && <div style={{ fontSize: 13, color: updateInfo?.error ? "var(--rec)" : "var(--ink-2)" }}>{updateStatus}</div>}
+            {releaseNote && <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.45 }}>{releaseNote}</div>}
+            {updateInfo?.asset?.name && (
+              <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                {updateInfo.asset.name}
+              </div>
+            )}
+          </div>
+        )}
       </Card>
 
       <SectionTitle>Keyboard shortcuts</SectionTitle>

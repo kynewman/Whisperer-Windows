@@ -5,7 +5,7 @@ All tuneable settings live here so you never have to dig through other files.
 
 import os
 
-VERSION = "5.5.4"
+VERSION = "5.5.5"
 
 # =============================================================================
 # Paths
@@ -38,7 +38,7 @@ WHISPER_LANGUAGE = "en"
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_DTYPE = "float32"
-AUDIO_BLOCKSIZE = 1024
+AUDIO_BLOCKSIZE = 512
 
 # =============================================================================
 # Global Hotkey

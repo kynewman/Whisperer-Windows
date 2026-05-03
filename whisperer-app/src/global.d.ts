@@ -35,6 +35,8 @@ declare global {
       deleteAutoRule?: (ruleId: number) => Promise<string>;
       setShortcut?: (name: string, value: string) => Promise<string>;
       setSetting?: (section: string, key: string, value: unknown) => Promise<string>;
+      checkForUpdates?: () => Promise<string>;
+      installUpdate?: () => Promise<string>;
     };
   }
 }
