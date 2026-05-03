@@ -41,6 +41,23 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 5.5.4
+
+Whisperer 5.5.4 adds hosted speech-to-text backends for users who do not have a
+fast local GPU. In Configuration, the GPU selector can now choose a local RTX
+5090, a local RTX 4080, Groq API (Whisper), or NVIDIA API (Parakeet).
+
+The Configuration screen stores Groq and NVIDIA API keys in the Windows
+credential vault, shows masked saved-key placeholders, and includes test buttons
+for validating each provider before starting the engine. Groq uses the Whisper
+API, while NVIDIA uses the hosted Parakeet API with chunked long-form handling so
+long dictations do not lose the end of the recording.
+
+As of May 2, 2026, Groq provides free API key access with free-plan speech
+limits, and NVIDIA's Parakeet NIM page offers free API access for development.
+Provider limits and terms still apply, but this means high-quality, high-speed
+dictation can be used without a strong local GPU.
+
 ## Project Structure
 
 ```text

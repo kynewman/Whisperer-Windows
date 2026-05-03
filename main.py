@@ -842,7 +842,7 @@ class WhisperApp:
                 mode = resolve_active_mode()
             mode_id = mode.id
             self.signals.set_mode.emit(mode.name)
-            stt_provider = mode.stt_provider or "local"
+            stt_provider = os.environ.get("WHISPERER_STT_PROVIDER") or mode.stt_provider or "local"
             settings = load_settings()
             perf_cfg = settings.get("performance", {})
             context_mode = str(perf_cfg.get("context_mode", "fast")).lower()
@@ -929,6 +929,8 @@ class WhisperApp:
                     key = get_key(stt_provider.replace("_whisper", ""))
                     if not key and stt_provider == "groq_whisper":
                         key = get_key("groq")
+                    if not key and stt_provider == "nvidia_parakeet":
+                        key = get_key("nvidia")
                     if not key:
                         raise RuntimeError(f"No API key configured for {stt_provider}")
                     with timed("dictation_transcribe_total"):
@@ -1233,15 +1235,21 @@ class WhisperApp:
 
     def _load_engine_background(self):
         record_timing("engine_import_phase", (time.perf_counter() - _PROCESS_START) * 1000.0)
+        cloud_stt_provider = os.environ.get("WHISPERER_STT_PROVIDER")
         model_name = config.WHISPER_MODEL_SIZE
-        engine_name = "NVIDIA Parakeet" if model_name.lower().startswith("nvidia/parakeet") else "Whisper"
-        print(f"Loading {engine_name} model onto GPU...", flush=True)
 
         try:
-            with timed("engine_startup_model_phase"):
-                load_model()
-                warmup_model()
-            print(f"Model loaded. Whisper Project is running with {model_name}.", flush=True)
+            ready_name = model_name
+            if cloud_stt_provider:
+                ready_name = cloud_stt_provider
+                print(f"Using cloud STT provider: {cloud_stt_provider}.", flush=True)
+            else:
+                engine_name = "NVIDIA Parakeet" if model_name.lower().startswith("nvidia/parakeet") else "Whisper"
+                print(f"Loading {engine_name} model onto GPU...", flush=True)
+                with timed("engine_startup_model_phase"):
+                    load_model()
+                    warmup_model()
+                print(f"Model loaded. Whisper Project is running with {model_name}.", flush=True)
 
             try:
                 self.recorder.refresh_settings(load_settings())
@@ -1252,7 +1260,7 @@ class WhisperApp:
 
             self._model_ready.set()
             self.signals.set_model_loading.emit(False)
-            _write_engine_ready_file(model_name)
+            _write_engine_ready_file(ready_name)
             print("ENGINE_READY", flush=True)
             self._start_stdin_command_reader()
             self._ensure_live_recognizer()

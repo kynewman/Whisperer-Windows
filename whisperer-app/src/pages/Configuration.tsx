@@ -7,6 +7,7 @@ export default function ConfigPage({
   tweaks,
   setTweaks,
   settings: appSettings,
+  apiKeys,
   shortcuts,
   setSetting,
   setShortcut,
@@ -14,6 +15,7 @@ export default function ConfigPage({
   tweaks: Tweaks;
   setTweaks: (t: Tweaks) => void;
   settings: AppSettings;
+  apiKeys: Record<string, { saved?: boolean; masked?: string }>;
   shortcuts: Record<string, string[]>;
   setSetting: (section: string, key: string, value: unknown) => void;
   setShortcut: (name: string, value: string) => void;
@@ -34,6 +36,12 @@ export default function ConfigPage({
   const [draftShortcut, setDraftShortcut] = useState<string[]>([]);
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeText, setPurgeText] = useState("");
+  const [groqApiKey, setGroqApiKey] = useState("");
+  const [groqKeyStatus, setGroqKeyStatus] = useState("");
+  const groqKeyMasked = apiKeys.groq?.masked || "";
+  const [nvidiaApiKey, setNvidiaApiKey] = useState("");
+  const [nvidiaKeyStatus, setNvidiaKeyStatus] = useState("");
+  const nvidiaKeyMasked = apiKeys.nvidia?.masked || "";
 
   useEffect(() => {
     setSettings((current) => ({
@@ -67,6 +75,60 @@ export default function ConfigPage({
   const setT = <K extends keyof Tweaks>(k: K, v: Tweaks[K]) => {
     setTweaks({ ...tweaks, [k]: v });
     setSetting("ui", k, v);
+  };
+
+  const saveGroqApiKey = () => {
+    const value = groqApiKey.trim();
+    if (!value || !window.whisperer?.setApiKey) return;
+    window.whisperer.setApiKey("groq", value)
+      .then(() => {
+        setGroqApiKey("");
+        setGroqKeyStatus("Saved");
+        window.setTimeout(() => setGroqKeyStatus(""), 2200);
+      })
+      .catch(() => setGroqKeyStatus("Could not save"));
+  };
+
+  const testGroqApiKey = () => {
+    if (!window.whisperer?.testApiKey) return;
+    setGroqKeyStatus("Testing...");
+    window.whisperer.testApiKey("groq")
+      .then((payload) => {
+        try {
+          const result = JSON.parse(payload);
+          setGroqKeyStatus(result.ok ? (result.message || "Key works") : (result.error || "Test failed"));
+        } catch {
+          setGroqKeyStatus("Test failed");
+        }
+      })
+      .catch(() => setGroqKeyStatus("Test failed"));
+  };
+
+  const saveNvidiaApiKey = () => {
+    const value = nvidiaApiKey.trim();
+    if (!value || !window.whisperer?.setApiKey) return;
+    window.whisperer.setApiKey("nvidia", value)
+      .then(() => {
+        setNvidiaApiKey("");
+        setNvidiaKeyStatus("Saved");
+        window.setTimeout(() => setNvidiaKeyStatus(""), 2200);
+      })
+      .catch(() => setNvidiaKeyStatus("Could not save"));
+  };
+
+  const testNvidiaApiKey = () => {
+    if (!window.whisperer?.testApiKey) return;
+    setNvidiaKeyStatus("Testing...");
+    window.whisperer.testApiKey("nvidia")
+      .then((payload) => {
+        try {
+          const result = JSON.parse(payload);
+          setNvidiaKeyStatus(result.ok ? (result.message || "Key works") : (result.error || "Test failed"));
+        } catch {
+          setNvidiaKeyStatus("Test failed");
+        }
+      })
+      .catch(() => setNvidiaKeyStatus("Test failed"));
   };
 
   const labelToHotkey = (key: string) => {
@@ -229,6 +291,37 @@ export default function ConfigPage({
               <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 5 }}>OpenAI-compatible URL</div>
               <Input value={settings.openaiCompatUrl} onChange={(v) => set("openaiCompatUrl", v)} />
             </div>
+          </div>
+        </div>
+        <div style={{ padding: "14px 18px", borderTop: "1px solid var(--line-soft)" }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 10 }}>Speech-to-text APIs</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, alignItems: "end" }}>
+            <div>
+              <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 5 }}>Groq API key</div>
+              <Input value={groqApiKey} onChange={setGroqApiKey} type="password" placeholder={groqKeyMasked || "Paste API key"} />
+              {groqKeyMasked && (
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 5 }}>
+                  Saved key: {groqKeyMasked}
+                </div>
+              )}
+            </div>
+            <Btn variant="secondary" icon="check" disabled={!groqApiKey.trim()} onClick={saveGroqApiKey}>Save</Btn>
+            <Btn variant="secondary" icon="reveal" onClick={testGroqApiKey}>Test</Btn>
+            <span style={{ minWidth: 150, fontSize: 12, color: groqKeyStatus.includes("failed") || groqKeyStatus.includes("No ") || groqKeyStatus.includes("rejected") || groqKeyStatus.includes("Could not") ? "var(--rec)" : "var(--ink-3)" }}>{groqKeyStatus}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, alignItems: "end", marginTop: 14 }}>
+            <div>
+              <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 5 }}>NVIDIA API key</div>
+              <Input value={nvidiaApiKey} onChange={setNvidiaApiKey} type="password" placeholder={nvidiaKeyMasked || "Paste API key"} />
+              {nvidiaKeyMasked && (
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 5 }}>
+                  Saved key: {nvidiaKeyMasked}
+                </div>
+              )}
+            </div>
+            <Btn variant="secondary" icon="check" disabled={!nvidiaApiKey.trim()} onClick={saveNvidiaApiKey}>Save</Btn>
+            <Btn variant="secondary" icon="reveal" onClick={testNvidiaApiKey}>Test</Btn>
+            <span style={{ minWidth: 150, fontSize: 12, color: nvidiaKeyStatus.includes("failed") || nvidiaKeyStatus.includes("No ") || nvidiaKeyStatus.includes("rejected") || nvidiaKeyStatus.includes("Could not") ? "var(--rec)" : "var(--ink-3)" }}>{nvidiaKeyStatus}</span>
           </div>
         </div>
       </Card>

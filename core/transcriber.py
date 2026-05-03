@@ -10,6 +10,7 @@ import json
 import io
 import logging
 import os
+import re
 import tempfile
 import urllib.error
 import urllib.request
@@ -215,13 +216,20 @@ def warmup_model() -> None:
 def _audio_to_wav_bytes(audio: np.ndarray) -> bytes:
     """Convert float32 numpy array to WAV bytes."""
     buf = io.BytesIO()
-    scaled = (audio * 32767).astype(np.int16)
+    scaled = np.clip(audio, -1.0, 1.0)
+    scaled = (scaled * 32767).astype(np.int16)
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(16000)
         wf.writeframes(scaled.tobytes())
     return buf.getvalue()
+
+
+def _audio_to_pcm16_bytes(audio: np.ndarray) -> bytes:
+    """Convert float32 numpy audio to raw 16-bit little-endian PCM."""
+    scaled = np.clip(audio.astype(np.float32, copy=False), -1.0, 1.0)
+    return (scaled * 32767).astype("<i2").tobytes()
 
 
 def _parakeet_text(result) -> str:
@@ -307,6 +315,8 @@ def transcribe_groq(audio: np.ndarray, api_key: str, language: str = "en", promp
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": f"Whisperer/{config.VERSION}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
         },
         method="POST",
@@ -314,6 +324,90 @@ def transcribe_groq(audio: np.ndarray, api_key: str, language: str = "en", promp
     with urllib.request.urlopen(req, timeout=30) as resp:
         result = json.loads(resp.read().decode("utf-8"))
         return result.get("text", "")
+
+
+def transcribe_nvidia_parakeet(audio: np.ndarray, api_key: str, language: str = "en", prompt: str | None = None) -> str:
+    """Transcribe via NVIDIA hosted Parakeet NIM/Riva endpoint."""
+    try:
+        import riva.client
+    except Exception as exc:
+        raise RuntimeError(
+            "NVIDIA Parakeet API requires nvidia-riva-client. Install it with: pip install nvidia-riva-client"
+        ) from exc
+
+    auth = riva.client.Auth(
+        uri="grpc.nvcf.nvidia.com:443",
+        use_ssl=True,
+        metadata_args=[
+            ["function-id", "d3fe9151-442b-4204-a70d-5fcc597fd610"],
+            ["authorization", f"Bearer {api_key}"],
+        ],
+    )
+    asr_service = riva.client.ASRService(auth)
+
+    def _recognition_config():
+        return riva.client.RecognitionConfig(
+            encoding=riva.client.AudioEncoding.LINEAR_PCM,
+            sample_rate_hertz=config.AUDIO_SAMPLE_RATE,
+            audio_channel_count=1,
+            language_code="en-US" if language.lower().startswith("en") else language,
+            max_alternatives=1,
+            enable_automatic_punctuation=True,
+            enable_word_time_offsets=False,
+        )
+
+    def _response_text(response) -> str:
+        parts: list[str] = []
+        for result in getattr(response, "results", []):
+            if getattr(result, "alternatives", None):
+                text = result.alternatives[0].transcript
+                if text:
+                    cleaned = re.sub(r"(?:<unk>\s*)+", " ", str(text), flags=re.IGNORECASE).strip()
+                    if cleaned:
+                        parts.append(cleaned)
+        return " ".join(part for part in parts if part).strip()
+
+    def _merge_transcript(previous: str, addition: str) -> str:
+        previous = previous.strip()
+        addition = addition.strip()
+        if not previous:
+            return addition
+        if not addition:
+            return previous
+        prev_words = previous.split()
+        add_words = addition.split()
+        prev_norm = [re.sub(r"\W+", "", word).lower() for word in prev_words]
+        add_norm = [re.sub(r"\W+", "", word).lower() for word in add_words]
+        max_overlap = min(12, len(prev_norm), len(add_norm))
+        for size in range(max_overlap, 0, -1):
+            if prev_norm[-size:] == add_norm[:size]:
+                return f"{previous} {' '.join(add_words[size:])}".strip()
+        return f"{previous} {addition}".strip()
+
+    audio_data = audio.astype(np.float32, copy=False)
+    sample_rate = int(config.AUDIO_SAMPLE_RATE)
+    chunk_samples = sample_rate * 25
+    overlap_samples = sample_rate
+    tail_pad = np.zeros(int(sample_rate * 1.2), dtype=np.float32)
+
+    if len(audio_data) <= chunk_samples:
+        padded_audio = np.concatenate([audio_data, tail_pad])
+        response = asr_service.offline_recognize(_audio_to_pcm16_bytes(padded_audio), _recognition_config())
+        return _response_text(response)
+
+    transcript = ""
+    start = 0
+    while start < len(audio_data):
+        end = min(len(audio_data), start + chunk_samples)
+        chunk = audio_data[start:end]
+        if end >= len(audio_data):
+            chunk = np.concatenate([chunk, tail_pad])
+        response = asr_service.offline_recognize(_audio_to_pcm16_bytes(chunk), _recognition_config())
+        transcript = _merge_transcript(transcript, _response_text(response))
+        if end >= len(audio_data):
+            break
+        start = max(0, end - overlap_samples)
+    return transcript
 
 
 def transcribe_deepgram(audio: np.ndarray, api_key: str, language: str = "en") -> str:
@@ -345,6 +439,8 @@ def transcribe_cloud(audio: np.ndarray, provider: str, api_key: str, language: s
         return transcribe_openai(audio, api_key, language=language, prompt=prompt)
     if provider == "groq_whisper":
         return transcribe_groq(audio, api_key, language=language, prompt=prompt)
+    if provider == "nvidia_parakeet":
+        return transcribe_nvidia_parakeet(audio, api_key, language=language, prompt=prompt)
     if provider == "deepgram":
         return transcribe_deepgram(audio, api_key, language=language)
     raise ValueError(f"Unknown cloud STT provider: {provider}")

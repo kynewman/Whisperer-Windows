@@ -18,6 +18,8 @@ import sys
 import threading
 import time
 import ctypes
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -37,6 +39,11 @@ from ui.tray import TrayIcon
 
 ENGINE_FORCE_STOP_RESTART_CODE = 42
 GPU_AUTO_VALUE = "auto"
+GROQ_API_GPU_VALUE = "groq_api"
+GROQ_API_LEGACY_GPU_VALUE = "grok_api"
+GROQ_API_STT_PROVIDER = "groq_whisper"
+NVIDIA_API_GPU_VALUE = "nvidia_api"
+NVIDIA_API_STT_PROVIDER = "nvidia_parakeet"
 LOADING_PREVIEW_HIDE_MS = 1400
 LOADING_READY_MORPH_HIDE_MS = 900
 LOADING_INTERACTION_HIDE_RETRY_MS = 450
@@ -218,6 +225,14 @@ class Bridge(QObject):
     def setGpu(self, value: str) -> str:
         return self._window.set_gpu(value)
 
+    @pyqtSlot(str, str, result=str)
+    def setApiKey(self, service: str, value: str) -> str:
+        return self._window.set_api_key(service, value)
+
+    @pyqtSlot(str, result=str)
+    def testApiKey(self, service: str) -> str:
+        return self._window.test_api_key(service)
+
     @pyqtSlot(str, result=str)
     def setMicrophone(self, value: str) -> str:
         return self._window.set_microphone(value)
@@ -315,6 +330,8 @@ _BRIDGE_SHIM = r"""
         micLevel: function() { return callResult("micLevel"); },
         setModel: function(value) { return callResult("setModel", value); },
         setGpu: function(value) { return callResult("setGpu", value); },
+        setApiKey: function(service, value) { return callResult("setApiKey", service, value); },
+        testApiKey: function(service) { return callResult("testApiKey", service); },
         setMicrophone: function(value) { return callResult("setMicrophone", value); },
         setInputChannel: function(value) { return callResult("setInputChannel", value); },
         addVocabularyWord: function(word) { return callResult("addVocabularyWord", word); },
@@ -718,6 +735,7 @@ class MainWindow(QMainWindow):
             "shortcuts": self._shortcut_payload(),
             "micLevel": self._mic_level_payload(),
             "dictationBackup": self._dictation_backup_payload(),
+            "apiKeys": self._api_key_payload(),
         }
         return json.dumps(snapshot, separators=(",", ":"))
 
@@ -750,6 +768,25 @@ class MainWindow(QMainWindow):
         payload["status"] = self._backup_transcription_status
         payload["error"] = self._backup_transcription_error
         return payload
+
+    def _api_key_payload(self) -> dict[str, Any]:
+        def _masked(service: str, fallback: str | None = None) -> dict[str, Any]:
+            try:
+                from core.secrets import get_key
+
+                key = get_key(service) or (get_key(fallback) if fallback else "") or ""
+            except Exception:
+                key = ""
+            if not key:
+                return {"saved": False, "masked": ""}
+            prefix = key[:6] if len(key) > 6 else key[:2]
+            suffix = key[-4:] if len(key) > 10 else ""
+            return {"saved": True, "masked": f"{prefix}...{suffix}" if suffix else f"{prefix}..."}
+
+        return {
+            "groq": _masked("groq", "groq_whisper"),
+            "nvidia": _masked("nvidia", "nvidia_parakeet"),
+        }
 
     def transcribe_last_dictation(self) -> str:
         if self._backup_transcription_busy:
@@ -886,11 +923,24 @@ if model:
 from core.dictation_backup import finalize_last_dictation_wav, load_last_dictation_audio
 from core.dictionary import apply_replacements, get_prompt_words
 from core.formatter import format_transcription
-from core.transcriber import transcribe
+from core.transcriber import transcribe, transcribe_cloud
+from core.secrets import get_key
 
 finalize_last_dictation_wav()
 audio = load_last_dictation_audio()
-raw_text = transcribe(audio, context_words=get_prompt_words(80))
+stt_provider = os.environ.get("WHISPERER_STT_PROVIDER")
+if stt_provider == "groq_whisper":
+    key = get_key("groq") or get_key("groq_whisper")
+    if not key:
+        raise RuntimeError("No Groq API key is configured.")
+    raw_text = transcribe_cloud(audio, "groq_whisper", key, language=config.WHISPER_LANGUAGE, prompt=get_prompt_words(80))
+elif stt_provider == "nvidia_parakeet":
+    key = get_key("nvidia") or get_key("nvidia_parakeet")
+    if not key:
+        raise RuntimeError("No NVIDIA API key is configured.")
+    raw_text = transcribe_cloud(audio, "nvidia_parakeet", key, language=config.WHISPER_LANGUAGE, prompt=get_prompt_words(80))
+else:
+    raw_text = transcribe(audio, context_words=get_prompt_words(80))
 final_text = apply_replacements(
     format_transcription(
         raw_text,
@@ -945,6 +995,93 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         if self.process and self.process.poll() is None:
             self.restart_engine()
         return snapshot
+
+    def set_api_key(self, service: str, value: str) -> str:
+        service = (service or "").strip().lower()
+        if service == "grok":
+            service = "groq"
+        if service in {"nvidia_parakeet", "nvidia_nim"}:
+            service = "nvidia"
+        if service not in {"groq", "nvidia", "openai", "openai_compat", "anthropic", "deepgram"}:
+            return json.dumps({"ok": False, "error": "Unsupported API key service."}, separators=(",", ":"))
+        from core.secrets import delete_key, set_key
+
+        value = (value or "").strip()
+        if value:
+            set_key(service, value)
+        else:
+            delete_key(service)
+        try:
+            self.bridge.settingsChanged.emit(self.snapshot_json())
+        except Exception:
+            pass
+        return json.dumps({"ok": True}, separators=(",", ":"))
+
+    def test_api_key(self, service: str) -> str:
+        service = (service or "").strip().lower()
+        if service == "grok":
+            service = "groq"
+        if service in {"nvidia_parakeet", "nvidia_nim"}:
+            service = "nvidia"
+        if service == "nvidia":
+            return self._test_nvidia_api_key()
+        if service != "groq":
+            return json.dumps({"ok": False, "error": "Unsupported API key service."}, separators=(",", ":"))
+
+        from core.secrets import get_key
+
+        key = get_key("groq") or get_key("groq_whisper")
+        if not key:
+            return json.dumps({"ok": False, "error": "No Groq API key is saved."}, separators=(",", ":"))
+
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/models",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                "User-Agent": f"Whisperer/{config.VERSION}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            message = f"Groq rejected the key ({exc.code})."
+            if body:
+                try:
+                    data = json.loads(body)
+                    message = str(data.get("error", {}).get("message") or data.get("message") or message)
+                except Exception:
+                    message = body[:180]
+            return json.dumps({"ok": False, "error": message}, separators=(",", ":"))
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"Could not reach Groq: {exc}"}, separators=(",", ":"))
+
+        models = payload.get("data") if isinstance(payload, dict) else None
+        count = len(models) if isinstance(models, list) else 0
+        return json.dumps({"ok": True, "message": f"Groq key works. {count} models visible."}, separators=(",", ":"))
+
+    def _test_nvidia_api_key(self) -> str:
+        from core.secrets import get_key
+
+        key = get_key("nvidia") or get_key("nvidia_parakeet")
+        if not key:
+            return json.dumps({"ok": False, "error": "No NVIDIA API key is saved."}, separators=(",", ":"))
+        try:
+            import numpy as np
+            from core.transcriber import transcribe_cloud
+
+            silence = np.zeros(config.AUDIO_SAMPLE_RATE // 2, dtype=np.float32)
+            transcribe_cloud(silence, "nvidia_parakeet", key, language=config.WHISPER_LANGUAGE)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"NVIDIA API test failed: {exc}"}, separators=(",", ":"))
+        return json.dumps({"ok": True, "message": "NVIDIA Parakeet key works."}, separators=(",", ":"))
 
     def set_microphone(self, value: str) -> str:
         audio = self.settings.setdefault("audio", {})
@@ -1033,7 +1170,11 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         return value if value in valid_values else MODEL_OPTIONS[0]["value"]
 
     def _load_gpu_options(self) -> list[tuple[str, str]]:
-        options = [("Auto (primary CUDA GPU)", GPU_AUTO_VALUE)]
+        options = [
+            ("Auto (primary CUDA GPU)", GPU_AUTO_VALUE),
+            ("Groq API (Whisper)", GROQ_API_GPU_VALUE),
+            ("NVIDIA API (Parakeet)", NVIDIA_API_GPU_VALUE),
+        ]
         try:
             creationflags = 0x08000000 if os.name == "nt" else 0
             result = subprocess.run(
@@ -1065,9 +1206,17 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
 
     def _apply_engine_gpu_env(self, env: dict[str, str]):
         gpu_value = str(self.settings.get("startup", {}).get("gpu_device", GPU_AUTO_VALUE))
-        if gpu_value and gpu_value != GPU_AUTO_VALUE:
+        if gpu_value in {GROQ_API_GPU_VALUE, GROQ_API_LEGACY_GPU_VALUE}:
+            env["WHISPERER_STT_PROVIDER"] = GROQ_API_STT_PROVIDER
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        elif gpu_value == NVIDIA_API_GPU_VALUE:
+            env["WHISPERER_STT_PROVIDER"] = NVIDIA_API_STT_PROVIDER
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        elif gpu_value and gpu_value != GPU_AUTO_VALUE:
+            env.pop("WHISPERER_STT_PROVIDER", None)
             env["CUDA_VISIBLE_DEVICES"] = gpu_value
         else:
+            env.pop("WHISPERER_STT_PROVIDER", None)
             env.pop("CUDA_VISIBLE_DEVICES", None)
 
     def _load_microphone_options(self) -> list[dict[str, str]]:

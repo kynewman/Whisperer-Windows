@@ -110,6 +110,7 @@ export interface AppSnapshot {
   shortcuts?: Record<string, string[]>;
   micLevel?: MicLevel;
   dictationBackup?: DictationBackup;
+  apiKeys?: Record<string, { saved?: boolean; masked?: string }>;
   vocabulary?: VocabularySnapshot;
   history?: HistorySnapshot;
   modesData?: ModeItem[];
@@ -134,6 +135,7 @@ const DEFAULT_MICROPHONES: MicOption[] = [{ value: "default", label: "System def
 const DEFAULT_CHANNELS: BridgeOption[] = [{ value: "0", label: "Channel 1" }];
 const DEFAULT_MIC_LEVEL: MicLevel = { db: -96, level: 0 };
 const DEFAULT_DICTATION_BACKUP: DictationBackup = { available: false, busy: false };
+const DEFAULT_API_KEYS: Record<string, { saved?: boolean; masked?: string }> = {};
 const DEFAULT_VOCABULARY: VocabularySnapshot = { wordCount: 0, words: [], rules: [] };
 const DEFAULT_HISTORY: HistorySnapshot = { items: [], totals: { today: 0, words: 0, minutes: 0 } };
 const DEFAULT_MODES: ModeItem[] = [];
@@ -262,6 +264,7 @@ export default function App() {
   const [shortcuts, setShortcuts] = useState<Record<string, string[]>>({ dictation: ["Ctrl", "Left Windows"] });
   const [micLevel, setMicLevel] = useState<MicLevel>(DEFAULT_MIC_LEVEL);
   const [dictationBackup, setDictationBackup] = useState<DictationBackup>(DEFAULT_DICTATION_BACKUP);
+  const [apiKeys, setApiKeys] = useState<Record<string, { saved?: boolean; masked?: string }>>(DEFAULT_API_KEYS);
   const [vocabulary, setVocabulary] = useState<VocabularySnapshot>(DEFAULT_VOCABULARY);
   const [history, setHistory] = useState<HistorySnapshot>(DEFAULT_HISTORY);
   const [modesData, setModesData] = useState<ModeItem[]>(DEFAULT_MODES);
@@ -296,6 +299,7 @@ export default function App() {
     if (snapshot.shortcuts) setShortcuts(snapshot.shortcuts);
     if (snapshot.micLevel) setMicLevel(snapshot.micLevel);
     if (snapshot.dictationBackup) setDictationBackup(snapshot.dictationBackup);
+    if (snapshot.apiKeys) setApiKeys(snapshot.apiKeys);
     if (snapshot.vocabulary) setVocabulary(snapshot.vocabulary);
     if (snapshot.history) setHistory(snapshot.history);
     if (snapshot.modesData) setModesData(snapshot.modesData);
@@ -515,6 +519,7 @@ export default function App() {
                 tweaks={tweaks}
                 setTweaks={setTweaks}
                 settings={settings}
+                apiKeys={apiKeys}
                 shortcuts={shortcuts}
                 setSetting={setSetting}
                 setShortcut={setShortcut}
