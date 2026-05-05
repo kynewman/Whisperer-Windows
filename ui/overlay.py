@@ -3,6 +3,7 @@ Transparent overlay window with a real-time audio waveform and custom dictionary
 Uses PyQt6 with a frameless, always-on-top, translucent window.
 """
 
+import os
 import numpy as np
 import time
 
@@ -20,6 +21,14 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QLinearGradient, QPen, QBrush, QImage, QPixmap, QFont
 from PyQt6.QtWidgets import QApplication, QWidget, QGraphicsOpacityEffect
+try:
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+except Exception:
+    QUrl = None
+    QWebEngineSettings = None
+    QWebEngineView = None
 from PIL import Image, ImageFilter
 
 import config
@@ -97,6 +106,12 @@ MODEL_LOADING_LABEL_GAP = 6.0
 MODEL_LOADING_LABEL_HEIGHT = 18.0
 NO_AUDIO_INPUT_RMS = 0.00012
 NO_AUDIO_INPUT_DELAY_S = 1.2
+WAVE_LIGHTS_ENV = "WHISPERER_EXPERIMENT_WAVE_LIGHTS"
+WAVE_LIGHTS_ASSET = os.path.join(config.PROJECT_ROOT, "assets", "overlay_wave_lights.html")
+WAVE_LIGHTS_WIDTH = 392.0
+WAVE_LIGHTS_HEIGHT = 86.0
+WAVE_LIGHTS_CONTROL_GUTTER = 48.0
+WAVE_LIGHTS_BANDS = 24
 
 
 class WaveformOverlay(QWidget):
@@ -141,7 +156,19 @@ class WaveformOverlay(QWidget):
         self._loading_spin_phase = 0.0
         self._no_audio_since: float | None = None
         self._no_audio_warning = False
+        self._wave_lights_view = None
+        self._wave_lights_loaded = False
+        self._wave_lights_last_level = -1.0
+        self._wave_lights_bands = np.zeros(WAVE_LIGHTS_BANDS, dtype=np.float64)
+        self._wave_lights_last_bands_ts = 0.0
+        self._wave_lights_enabled = (
+            os.environ.get(WAVE_LIGHTS_ENV) == "1"
+            and QWebEngineView is not None
+            and os.path.exists(WAVE_LIGHTS_ASSET)
+        )
         self._init_window()
+        if self._wave_lights_enabled:
+            self._init_wave_lights_view()
 
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self._opacity_effect.setOpacity(0.0)
@@ -198,6 +225,134 @@ class WaveformOverlay(QWidget):
         self._stop_hit_rect = QRectF()
         self._no_audio_since = None
         self._no_audio_warning = False
+
+    def _init_wave_lights_view(self):
+        try:
+            view = QWebEngineView(self)
+            view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            view.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            view.setAutoFillBackground(False)
+            if QWebEngineSettings is not None:
+                settings = view.settings()
+                settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+                if hasattr(QWebEngineSettings.WebAttribute, "WebGLEnabled"):
+                    settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+            view.page().setBackgroundColor(QColor(0, 0, 0, 0))
+            view.loadFinished.connect(self._on_wave_lights_loaded)
+            view.load(QUrl.fromLocalFile(os.path.abspath(WAVE_LIGHTS_ASSET)))
+            view.hide()
+            self._wave_lights_view = view
+        except Exception as exc:
+            print(f"Wave Lights experiment unavailable: {exc}", flush=True)
+            self._wave_lights_enabled = False
+            self._wave_lights_view = None
+
+    def _on_wave_lights_loaded(self, ok: bool):
+        self._wave_lights_loaded = bool(ok)
+        if not ok:
+            self._wave_lights_enabled = False
+            if self._wave_lights_view is not None:
+                self._wave_lights_view.hide()
+            return
+        self._sync_wave_lights_visibility()
+
+    def _wave_lights_should_show(self) -> bool:
+        return (
+            self._wave_lights_enabled
+            and self._wave_lights_view is not None
+            and self._wave_lights_loaded
+            and self.isVisible()
+            and not self._loading_visual_active()
+            and not self._processing
+            and self._state == "normal"
+        )
+
+    def _wave_lights_layout_active(self) -> bool:
+        return (
+            bool(getattr(self, "_wave_lights_enabled", False))
+            and not self._loading_visual_active()
+            and not getattr(self, "_processing", False)
+            and getattr(self, "_state", "normal") == "normal"
+        )
+
+    def _sync_wave_lights_visibility(self):
+        if self._wave_lights_view is None:
+            return
+        show = self._wave_lights_should_show()
+        self._wave_lights_view.setVisible(show)
+        if self._wave_lights_loaded:
+            active = "true" if show and not self._fading_out else "false"
+            self._wave_lights_view.page().runJavaScript(f"window.setOverlayActive && window.setOverlayActive({active});")
+
+    def _update_wave_lights_geometry(self, panel: QRectF):
+        if self._wave_lights_view is None:
+            return
+        rect = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+        if rect.width() <= 8 or rect.height() <= 8:
+            self._wave_lights_view.hide()
+            return
+        self._wave_lights_view.setGeometry(
+            int(round(rect.left())),
+            int(round(rect.top())),
+            max(1, int(round(rect.width()))),
+            max(1, int(round(rect.height()))),
+        )
+        self._sync_wave_lights_visibility()
+
+    def _wave_lights_active(self) -> bool:
+        return self._wave_lights_should_show()
+
+    def _send_wave_lights_level(self, level: float):
+        if self._wave_lights_view is None or not self._wave_lights_loaded:
+            return
+        level = max(0.0, min(1.0, float(level)))
+        if abs(level - self._wave_lights_last_level) < 0.045:
+            return
+        self._wave_lights_last_level = level
+        self._wave_lights_view.page().runJavaScript(f"window.setMicLevel && window.setMicLevel({level:.4f});")
+
+    def _compute_wave_lights_bands(self, chunk: np.ndarray | None) -> list[float]:
+        if chunk is None or len(chunk) < 32:
+            self._wave_lights_bands *= 0.90
+            return self._wave_lights_bands.tolist()
+        try:
+            data = chunk.astype(np.float32, copy=False)
+            data = data[-min(len(data), 4096):]
+            data = data - float(np.mean(data))
+            rms = float(np.sqrt(np.mean(data * data))) if len(data) else 0.0
+            voice_weight = max(0.0, min(1.0, (rms - 0.0025) * 55.0))
+            if voice_weight <= 0.015:
+                self._wave_lights_bands *= 0.82
+                return self._wave_lights_bands.tolist()
+            window = np.hanning(len(data)).astype(np.float32)
+            spectrum = np.abs(np.fft.rfft(data * window))
+            freqs = np.fft.rfftfreq(len(data), 1.0 / float(config.AUDIO_SAMPLE_RATE))
+            edges = np.geomspace(80.0, 5200.0, WAVE_LIGHTS_BANDS + 1)
+            bands = np.zeros(WAVE_LIGHTS_BANDS, dtype=np.float64)
+            for i in range(WAVE_LIGHTS_BANDS):
+                mask = (freqs >= edges[i]) & (freqs < edges[i + 1])
+                if np.any(mask):
+                    bands[i] = float(np.mean(spectrum[mask]))
+            bands = np.log1p(bands * 85.0)
+            bands = np.clip((bands / 2.15) ** 0.70, 0.0, 1.0)
+            bands *= voice_weight
+            rising = bands > self._wave_lights_bands
+            ease = np.where(rising, 0.72, 0.10)
+            self._wave_lights_bands += (bands - self._wave_lights_bands) * ease
+        except Exception:
+            self._wave_lights_bands *= 0.90
+        return self._wave_lights_bands.tolist()
+
+    def _send_wave_lights_bands(self, bands: list[float]):
+        if self._wave_lights_view is None or not self._wave_lights_loaded:
+            return
+        now = time.monotonic()
+        if now - self._wave_lights_last_bands_ts < 0.025:
+            return
+        self._wave_lights_last_bands_ts = now
+        payload = ",".join(f"{max(0.0, min(1.0, float(value))):.3f}" for value in bands)
+        self._wave_lights_view.page().runJavaScript(f"window.setSpectrum && window.setSpectrum([{payload}]);")
 
     def _reset_visual_gain(self):
         self._visual_gain = VISUAL_GAIN
@@ -512,6 +667,7 @@ class WaveformOverlay(QWidget):
         self.raise_()
         self._fade_anim.start()
         self._request_blur_refresh(120)
+        self._sync_wave_lights_visibility()
 
     def _grab_blur_then_show(self, request_id, screen, px_x, px_y, px_w, px_h, ratio, logic_w, logical_h):
         if request_id != self._blur_request_id:
@@ -591,6 +747,7 @@ class WaveformOverlay(QWidget):
         self._blur_request_id += 1
         self._blur_refresh_pending = False
         self._fading_out = True
+        self._sync_wave_lights_visibility()
         self._repaint_timer.start(REPAINT_INTERVAL_MS)
         self._fade_anim.stop()
         self._fade_anim.setDuration(FADE_OUT_MS)
@@ -635,6 +792,7 @@ class WaveformOverlay(QWidget):
         self._bar_heights[:] = 0.0
         self._reset_visual_gain()
         self._expansion = 0.0
+        self._sync_wave_lights_visibility()
         self.hide()
         try:
             self._fade_anim.finished.disconnect(self._on_fade_out_done)
@@ -675,6 +833,19 @@ class WaveformOverlay(QWidget):
     def set_audio_chunk(self, chunk: np.ndarray | None):
         self._audio_chunk = chunk
         self._update_no_audio_warning(chunk)
+        if not self._wave_lights_enabled:
+            return
+        level = 0.0
+        if self._active and chunk is not None and len(chunk) > 0:
+            try:
+                data = chunk.astype(np.float32, copy=False)
+                rms = float(np.sqrt(np.mean(data * data)))
+                level = max(0.0, min(1.0, (rms - VISUAL_NOISE_FLOOR) * 13.5))
+                level = level ** 0.72
+            except Exception:
+                level = 0.0
+        self._send_wave_lights_level(level)
+        self._send_wave_lights_bands(self._compute_wave_lights_bands(chunk if self._active else None))
 
     def set_active(self, active: bool):
         self._active = active
@@ -699,6 +870,7 @@ class WaveformOverlay(QWidget):
                 self._wave_centered_by_audio = False
                 self._idle_wave_allowed = True
                 self._wave_offsets[:] = 0.0
+        self._sync_wave_lights_visibility()
 
     def set_status(self, text: str):
         self._status_text = text
@@ -743,6 +915,7 @@ class WaveformOverlay(QWidget):
             self._transcribed_words = ""
             self._wave_blend = 1.0
             self._repaint_timer.start(REPAINT_INTERVAL_MS)
+        self._sync_wave_lights_visibility()
         self.update()
 
     def finish_model_loading(self):
@@ -811,6 +984,7 @@ class WaveformOverlay(QWidget):
             self._reset_visual_gain()
             self._processing_phase = 0.0
             self._repaint_timer.start(REPAINT_INTERVAL_MS)
+        self._sync_wave_lights_visibility()
         self.update()
 
     def enterEvent(self, event):
@@ -1109,12 +1283,13 @@ class WaveformOverlay(QWidget):
         lock_target = 1.0 if self._locked else 0.0
         self._lock_glow += (lock_target - self._lock_glow) * 0.24
         panel = self._panel_rect(w, h)
+        self._update_wave_lights_geometry(panel)
 
         self._draw_blurred_background(painter, panel)
         self._draw_drag_handle(painter, panel)
         if self._loading_visual_active():
             self._draw_loading_waveform(painter, panel)
-        else:
+        elif not self._wave_lights_active():
             self._draw_waveform(painter, panel)
         self._draw_hover_controls(painter, panel)
         self._draw_status_text(painter, panel)
@@ -1133,6 +1308,11 @@ class WaveformOverlay(QWidget):
             height += lock_dilate
             width += HOVER_DILATE_WIDTH * self._hover_progress * morph
             height += HOVER_DILATE_HEIGHT * self._hover_progress * morph
+        elif self._wave_lights_layout_active():
+            width = WAVE_LIGHTS_WIDTH
+            height = WAVE_LIGHTS_HEIGHT
+            width += LOCK_DILATE_WIDTH * self._lock_glow
+            height += LOCK_DILATE_HEIGHT * self._lock_glow
         else:
             width = COLLAPSED_PILL_WIDTH + (EXPANDED_PILL_WIDTH - COLLAPSED_PILL_WIDTH) * self._expansion
             height = COLLAPSED_PILL_HEIGHT + (EXPANDED_PILL_HEIGHT - COLLAPSED_PILL_HEIGHT) * self._expansion
@@ -1146,6 +1326,9 @@ class WaveformOverlay(QWidget):
 
     def _draw_blurred_background(self, painter: QPainter, panel: QRectF):
         """Draw a SuperWhisper-like compact recording panel."""
+        if self._wave_lights_active():
+            return
+
         capsule = panel
         radius = panel.height() / 2
         path = QPainterPath()

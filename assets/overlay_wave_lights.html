@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whisperer Wave Lights Experiment</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      -webkit-mask-image: radial-gradient(ellipse 46% 46% at 50% 50%, #000 0%, #000 22%, rgba(0,0,0,0.68) 43%, rgba(0,0,0,0.24) 66%, transparent 90%);
+      mask-image: radial-gradient(ellipse 46% 46% at 50% 50%, #000 0%, #000 22%, rgba(0,0,0,0.68) 43%, rgba(0,0,0,0.24) 66%, transparent 90%);
+    }
+  </style>
+</head>
+<body>
+<canvas id="wave-lights"></canvas>
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("wave-lights");
+  const gl = canvas.getContext("webgl", {
+    alpha: true,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: false,
+    powerPreference: "low-power"
+  });
+
+  if (!gl) {
+    document.documentElement.dataset.webgl = "unavailable";
+    return;
+  }
+
+  const vertexSource = `
+    attribute vec2 aPosition;
+
+    void main() {
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+  `;
+
+  // Visual reference: sabosugi's "Wave Lights" CodePen.
+  // This local variant removes external dependencies and adds subtle mic input.
+  const fragmentSource = `
+    precision mediump float;
+
+    uniform vec2 uResolution;
+    uniform float uTime;
+    uniform float uMicLevel;
+    uniform float uBands[24];
+
+    float generateFineNoise(vec2 p) {
+      vec3 p3 = fract(vec3(p.xyx) * 8.6231);
+      p3 += dot(p3, p3.yzx + 67.92);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+
+    float spectrumSample(float x) {
+      float bandPosition = clamp((x + 2.12) / 4.24, 0.0, 1.0) * 23.0;
+      float band = 0.0;
+      float neighbor = 0.0;
+      for (int i = 0; i < 24; i++) {
+        float fi = float(i);
+        band += uBands[i] * max(0.0, 1.0 - abs(fi - bandPosition));
+        neighbor += uBands[i] * max(0.0, 1.0 - abs(fi - bandPosition) / 2.5) * 0.18;
+      }
+      return clamp(band * 0.82 + neighbor, 0.0, 1.0);
+    }
+
+    float spectrumAverage() {
+      float total = 0.0;
+      for (int i = 0; i < 24; i++) {
+        total += uBands[i];
+      }
+      return total / 24.0;
+    }
+
+    float rawBandAt(float x) {
+      float direct = spectrumSample(x);
+      float mirrored = spectrumSample(-x);
+      float nearby = (spectrumSample(x - 0.42) + direct + spectrumSample(x + 0.42)) / 3.0;
+      float voiceFloor = spectrumAverage();
+      return clamp(direct * 0.70 + mirrored * 0.16 + nearby * 0.20 + voiceFloor * 0.08, 0.0, 1.0);
+    }
+
+    float bandAt(float x) {
+      return smoothstep(0.015, 0.86, rawBandAt(x));
+    }
+
+    float waveform(float x, float t, float phase) {
+      float bandEnergy = bandAt(x);
+      float activeBand = smoothstep(0.18, 0.78, rawBandAt(x));
+      float voiceShape = max(activeBand * 1.22, uMicLevel * 0.08);
+      float idleWave = (
+        sin(x * 4.6 + t * 1.55 + phase) * 0.070 +
+        sin(x * 8.2 - t * 1.18 + phase * 1.7) * 0.025 +
+        sin(x * 13.0 + t * 0.72 - phase) * 0.012
+      ) * (0.48 + activeBand * 1.15);
+      float bandLift = smoothstep(0.20, 0.74, rawBandAt(x));
+      float bandContrast = abs(rawBandAt(x + 0.18) - rawBandAt(x - 0.18));
+      float carrier = sin(x * 2.25 + t * 0.42 + phase * 0.45);
+      float spectralLift = bandLift * carrier * (0.10 + activeBand * 0.34 + uMicLevel * 0.06);
+      return clamp(idleWave + spectralLift + bandContrast * 0.036 * sign(carrier), -0.42, 0.42);
+    }
+
+    void main() {
+      vec2 fragCoord = gl_FragCoord.xy;
+      vec2 normalized = fragCoord / max(uResolution.xy, vec2(1.0));
+      vec2 centered = normalized - 0.5;
+      vec2 uv = (2.0 * fragCoord - uResolution.xy) / max(uResolution.y, 1.0);
+      uv.x *= 0.58;
+      vec3 rayDir = normalize(vec3(uv, 1.0));
+      vec4 finalColor = vec4(0.0);
+      float totalDistance = 0.0;
+      float mic = smoothstep(0.0, 1.0, uMicLevel);
+      float timeElapsed = uTime * (0.46 + mic * 0.055);
+      float pixelNoise = generateFineNoise(fragCoord) * 0.004;
+      float spectralEnergy = bandAt(uv.x);
+      float directWave = waveform(uv.x, timeElapsed, 0.0) * (0.74 + spectralEnergy * 0.36 + mic * 0.08);
+      float directDistance = abs(uv.y - directWave);
+      float directCore = smoothstep(0.068 + spectralEnergy * 0.165 + mic * 0.034, 0.0, directDistance);
+      float directGlow = smoothstep(0.38 + spectralEnergy * 0.72 + mic * 0.095, 0.0, directDistance);
+      vec3 waveColor = vec3(0.65, 0.86, 1.18) + 0.42 * cos(vec3(0.0, 1.1, 2.2) + uv.x * 2.6 + timeElapsed);
+
+      for (int i = 0; i < 38; i++) {
+        vec3 currentPos = rayDir * totalDistance;
+        currentPos.z -= 2.0;
+
+        float wTime = timeElapsed;
+        float waveBoost = 1.0 + mic * 0.14;
+        float localBand = bandAt(currentPos.x);
+        float waveHeight = waveform(currentPos.x, wTime, currentPos.z * 0.22) * (0.64 + localBand * 0.86) * waveBoost;
+
+        float distToWave = abs(currentPos.y - waveHeight);
+        currentPos /= 9.291;
+
+        float stepSize = min(distToWave - 0.080, pixelNoise) + 0.146;
+        totalDistance += stepSize;
+
+        float patternX = sin(currentPos.x + cos(currentPos.y) * cos(currentPos.z));
+        float patternY = sin(currentPos.z + sin(currentPos.y) * cos(currentPos.x + timeElapsed));
+        float basePattern = smoothstep(0.42, 0.72, patternX * patternY);
+        float waveBand = smoothstep(0.34 + localBand * 0.55, 0.0, distToWave);
+        float blendFactor = 0.18 / (distToWave * distToWave + 0.012);
+        float mixedPattern = mix(basePattern, 1.0, blendFactor);
+        float glowIntensity = ((0.0068 + mic * 0.0024 + localBand * 0.0068) / (5.1 + stepSize)) * (0.22 + waveBand * 1.58);
+        float distanceFade = smoothstep(36.5, 7.3, totalDistance);
+        vec3 paletteColor = 1.0 + cos(totalDistance * 3.0 + vec3(0.0, 1.0, 2.0));
+
+        finalColor.rgb += glowIntensity * mixedPattern * distanceFade * paletteColor;
+      }
+
+      float dither = (generateFineNoise(fragCoord + vec2(12.34, 56.78)) - 0.5) / 128.0;
+      finalColor.rgb += vec3(dither);
+      finalColor.rgb += waveColor * (directGlow * 0.088 + directCore * (0.27 + mic * 0.090));
+      finalColor.rgb *= 1.14 + mic * 0.22;
+      float ovalDistance = length(centered * vec2(0.95, 2.48));
+      float ovalFeather = smoothstep(1.05, 0.08, ovalDistance);
+      float edgeFeather =
+        smoothstep(0.00, 0.40, normalized.x) *
+        smoothstep(1.00, 0.60, normalized.x) *
+        smoothstep(0.00, 0.56, normalized.y) *
+        smoothstep(1.00, 0.44, normalized.y);
+      float feather = pow(clamp(ovalFeather * edgeFeather, 0.0, 1.0), 1.45);
+      float alpha = clamp(max(max(finalColor.r, finalColor.g), finalColor.b) * 4.85, 0.0, 0.88) * feather;
+      if (alpha < 0.003) {
+        discard;
+      }
+      gl_FragColor = vec4(finalColor.rgb, alpha);
+    }
+  `;
+
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(shader) || "Shader compile failed");
+    }
+    return shader;
+  }
+
+  function createProgram() {
+    const program = gl.createProgram();
+    gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program) || "Program link failed");
+    }
+    return program;
+  }
+
+  let program;
+  try {
+    program = createProgram();
+  } catch (error) {
+    document.body.style.background = "radial-gradient(ellipse at center, rgba(120,190,255,0.38), rgba(120,190,255,0.16) 36%, rgba(120,190,255,0.04) 58%, transparent 78%)";
+    console.error(error);
+    return;
+  }
+  const position = gl.getAttribLocation(program, "aPosition");
+  const resolution = gl.getUniformLocation(program, "uResolution");
+  const time = gl.getUniformLocation(program, "uTime");
+  const micLevel = gl.getUniformLocation(program, "uMicLevel");
+  const bands = gl.getUniformLocation(program, "uBands");
+  const buffer = gl.createBuffer();
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+    gl.STATIC_DRAW
+  );
+
+  let targetMic = 0.0;
+  let renderedMic = 0.0;
+  let targetBands = new Float32Array(24);
+  let renderedBands = new Float32Array(24);
+  let active = true;
+  let frameHandle = 0;
+  const start = performance.now();
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+    const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      gl.viewport(0, 0, width, height);
+    }
+  }
+
+  function render(now) {
+    frameHandle = 0;
+    if (!active) {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+
+    resize();
+    const micEase = targetMic > renderedMic ? 0.150 : 0.040;
+    renderedMic += (targetMic - renderedMic) * micEase;
+    for (let i = 0; i < renderedBands.length; i += 1) {
+      const bandEase = targetBands[i] > renderedBands[i] ? 0.280 : 0.040;
+      renderedBands[i] += (targetBands[i] - renderedBands[i]) * bandEase;
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform2f(resolution, canvas.width, canvas.height);
+    gl.uniform1f(time, (now - start) / 1000);
+    gl.uniform1f(micLevel, renderedMic);
+    gl.uniform1fv(bands, renderedBands);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    frameHandle = requestAnimationFrame(render);
+  }
+
+  function requestRender() {
+    if (!frameHandle) {
+      frameHandle = requestAnimationFrame(render);
+    }
+  }
+
+  window.setMicLevel = (level) => {
+    targetMic = Math.max(0, Math.min(1, Number(level) || 0));
+    requestRender();
+  };
+
+  window.setSpectrum = (values) => {
+    if (!Array.isArray(values)) {
+      return;
+    }
+    for (let i = 0; i < targetBands.length; i += 1) {
+      targetBands[i] = Math.max(0, Math.min(1, Number(values[i]) || 0));
+    }
+    requestRender();
+  };
+
+  window.setOverlayActive = (nextActive) => {
+    active = Boolean(nextActive);
+    if (active) {
+      requestRender();
+    }
+  };
+
+  window.addEventListener("resize", requestRender);
+  requestRender();
+})();
+</script>
+</body>
+</html>
