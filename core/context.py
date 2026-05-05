@@ -270,3 +270,49 @@ def capture_ui_automation_text(hwnd: int | None = None) -> str:
         return text.strip()
     except Exception:
         return ""
+
+
+def get_text_before_cursor(max_chars: int = 4) -> str:
+    """Return a small slice immediately before the caret when UI Automation exposes it."""
+    try:
+        max_chars = max(1, min(16, int(max_chars)))
+    except (TypeError, ValueError):
+        max_chars = 4
+    try:
+        import comtypes.client
+
+        ui_automation = comtypes.client.CreateObject("UIAutomationClient.CUIAutomation")
+        element = ui_automation.GetFocusedElement()
+        if element is None:
+            return ""
+        # UIA_TextPattern2Id, then UIA_TextPatternId.
+        for pattern_id in (10024, 10014):
+            try:
+                text_pattern = element.GetCurrentPattern(pattern_id)
+            except Exception:
+                text_pattern = None
+            if not text_pattern:
+                continue
+            try:
+                ranges = text_pattern.GetSelection()
+                if getattr(ranges, "Length", 0) <= 0:
+                    continue
+                caret_range = ranges.GetElement(0)
+            except Exception:
+                continue
+            try:
+                # Non-collapsed selections are replacements, not "cursor is next
+                # to punctuation" insertions.
+                if caret_range.CompareEndpoints(0, caret_range, 1) != 0:
+                    return ""
+            except Exception:
+                pass
+            try:
+                before = caret_range.Clone()
+                before.MoveEndpointByUnit(0, 1, -max_chars)  # Start, Character
+                return str(before.GetText(max_chars) or "")
+            except Exception:
+                continue
+    except Exception:
+        return ""
+    return ""

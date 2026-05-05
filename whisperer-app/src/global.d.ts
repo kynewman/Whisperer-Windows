@@ -26,6 +26,7 @@ declare global {
       addReplacementRule?: (matchText: string, replaceWith: string) => Promise<string>;
       copyText?: (text: string) => Promise<string>;
       transcribeLastDictation?: () => Promise<string>;
+      runSttBenchmark?: () => Promise<string>;
       deleteDictation?: (dictationId: number) => Promise<string>;
       purgeHistory?: () => Promise<string>;
       addMode?: (name?: string) => Promise<string>;

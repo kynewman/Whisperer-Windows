@@ -7,6 +7,17 @@ import re
 from core.modes import Mode, resolve_active_mode
 
 
+def _normalize_punctuation_spacing(text: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return text
+    text = re.sub(r"\s+([,.;:!?%])", r"\1", text)
+    text = re.sub(r"([\(\[\{])\s+", r"\1", text)
+    text = re.sub(r"\s+([\)\]\}])", r"\1", text)
+    text = re.sub(r"(?<=\d)([.,])\s+(?=\d)", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _format_davinci(text: str) -> str:
     text = text.strip().lower()
     for ch in ".,!?;:\"'()-":
@@ -15,7 +26,7 @@ def _format_davinci(text: str) -> str:
 
 
 def _format_screenwriting(text: str) -> str:
-    text = text.strip()
+    text = _normalize_punctuation_spacing(text)
     if not text:
         return text
     scene_heading_pattern = re.compile(r"^(int\.|ext\.|int/ext\.|i/e\.)\s*", re.IGNORECASE)
@@ -31,7 +42,7 @@ def _format_screenwriting(text: str) -> str:
 
 
 def _format_standard(text: str) -> str:
-    text = text.strip()
+    text = _normalize_punctuation_spacing(text)
     if not text:
         return text
     text = text[0].upper() + text[1:]
@@ -65,6 +76,8 @@ def _apply_prompt_rules(text: str, prompt: str) -> str | None:
 
     if any(phrase in prompt_lower for phrase in ("no punctuation", "remove punctuation", "without punctuation")):
         formatted = _remove_punctuation(formatted)
+    else:
+        formatted = _normalize_punctuation_spacing(formatted)
     return formatted
 
 

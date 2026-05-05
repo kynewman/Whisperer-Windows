@@ -261,6 +261,12 @@ class WaveformOverlay(QWidget):
         self._blur_cache_pixmap = QPixmap()
         self._blur_cache_key = None
 
+    def _refresh_blur_after_position_change(self, delay_ms: int = 80):
+        self._clear_blur_cache()
+        if self.isVisible() and not self._fading_out:
+            self._request_blur_refresh(delay_ms, force=True)
+            self._repaint_timer.start(REPAINT_INTERVAL_MS)
+
     def _request_blur_refresh(self, delay_ms: int = 120, *, force: bool = False):
         now = time.monotonic()
         if not force and (self._blur_refresh_pending or now - self._last_blur_refresh_request_ts < 0.30):
@@ -269,7 +275,8 @@ class WaveformOverlay(QWidget):
         self._blur_refresh_pending = True
         self._blur_request_id += 1
         blur_request_id = self._blur_request_id
-        screen = self.screen()
+        panel = self._panel_global_rect()
+        screen = QApplication.screenAt(panel.center().toPoint()) or self.screen()
         if not screen:
             self._blur_refresh_pending = False
             self.update()
@@ -424,6 +431,7 @@ class WaveformOverlay(QWidget):
         if target == self.pos():
             if save_when_done:
                 self._save_position()
+            self._refresh_blur_after_position_change()
             return
         self._save_after_position_anim = save_when_done
         self._stop_position_animation()
@@ -432,10 +440,10 @@ class WaveformOverlay(QWidget):
         self._position_anim.start()
 
     def _on_position_animation_finished(self):
-        self._clear_blur_cache()
         if self._save_after_position_anim:
             self._save_position()
             self._save_after_position_anim = False
+        self._refresh_blur_after_position_change()
 
     def _snap_to_default_if_still_near(self):
         if not self._dragging or not self._center_magnet_armed or not self._is_near_default_position():
@@ -885,11 +893,11 @@ class WaveformOverlay(QWidget):
             self._last_default_distance = None
             self._drag_available_geometry = None
             self._drag_default_position = None
-            self._clear_blur_cache()
             if target is not None:
                 self._animate_to_position(target, save_when_done=True)
             else:
                 self._save_position()
+                self._refresh_blur_after_position_change()
             event.accept()
             return
         super().mouseReleaseEvent(event)

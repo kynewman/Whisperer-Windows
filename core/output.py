@@ -61,7 +61,11 @@ def paste_text(
         if _CLIPBOARD_AVAILABLE:
             pyperclip.copy(text)
         # tiny pause so the OS registers the clipboard update
-        time.sleep(max(0, int(paste_delay_ms)) / 1000.0)
+        try:
+            delay_s = max(0, int(paste_delay_ms)) / 1000.0
+        except (TypeError, ValueError):
+            delay_s = 0.05
+        time.sleep(delay_s)
         if _KEYBOARD_AVAILABLE:
             keyboard.send("ctrl+v")
         if restore_clipboard and _CLIPBOARD_AVAILABLE:

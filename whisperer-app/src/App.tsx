@@ -125,7 +125,9 @@ const DEFAULT_TWEAKS: Tweaks = {
 };
 
 const DEFAULT_MODELS: BridgeOption[] = [
-  { value: "nvidia/parakeet-unified-en-0.6b", label: "NVIDIA Parakeet Unified 0.6B" },
+  { value: "nvidia/parakeet-tdt-0.6b-v2", label: "NVIDIA Parakeet TDT 0.6B (RNNT streaming)" },
+  { value: "nvidia/parakeet-ctc-0.6b", label: "NVIDIA Parakeet CTC 0.6B (RNNT streaming)" },
+  { value: "nvidia/parakeet-unified-en-0.6b", label: "NVIDIA Parakeet Unified 0.6B (RNNT streaming)" },
   { value: "deepdml/faster-whisper-large-v3-turbo-ct2", label: "Whisper v3 Turbo" },
   { value: "large-v3", label: "Whisper Large v3" },
 ];
@@ -251,7 +253,7 @@ function parseSnapshot(raw: string | AppSnapshot | undefined): AppSnapshot | nul
 export default function App() {
   const [activePage, setActivePage] = useState<NavKey>("home");
   const [engineState, setEngineState] = useState<EngineState>("stopped");
-  const [version, setVersion] = useState("4.0.0");
+  const [version, setVersion] = useState("6.0.0");
   const [settings, setSettings] = useState<AppSettings>({});
   const [models, setModels] = useState<BridgeOption[]>(DEFAULT_MODELS);
   const [gpus, setGpus] = useState<BridgeOption[]>(DEFAULT_GPUS);

@@ -41,6 +41,12 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.0
+
+Whisperer 6.0.0 adds the low-latency Parakeet streaming path, adaptive
+streaming finalization, smaller microphone chunks for faster partials, a
+known-good paste fast path, and an STT provider benchmark in Configuration.
+
 ## Version 5.5.5
 
 Whisperer 5.5.5 adds update checks in Configuration so the app can see the

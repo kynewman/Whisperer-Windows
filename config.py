@@ -5,7 +5,7 @@ All tuneable settings live here so you never have to dig through other files.
 
 import os
 
-VERSION = "5.5.5"
+VERSION = "6.0.0"
 
 # =============================================================================
 # Paths
@@ -26,7 +26,7 @@ MODEL_CACHE_DIR = os.environ.get("WHISPERER_MODEL_CACHE_DIR", _default_model_cac
 # =============================================================================
 # Whisper Engine
 # =============================================================================
-WHISPER_MODEL_SIZE = "deepdml/faster-whisper-large-v3-turbo-ct2"
+WHISPER_MODEL_SIZE = "nvidia/parakeet-tdt-0.6b-v2"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE_TYPE = "float16"
 WHISPER_BEAM_SIZE = 2  # Reduced from 5 for maximum speed (snappiness) without losing much accuracy

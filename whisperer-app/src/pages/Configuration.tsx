@@ -17,6 +17,25 @@ type UpdateInfo = {
   shouldCloseApp?: boolean;
 };
 
+type BenchmarkItem = {
+  label: string;
+  provider?: string;
+  ok?: boolean;
+  elapsedMs?: number | null;
+  text?: string;
+  error?: string;
+  skipped?: boolean;
+};
+
+type BenchmarkResult = {
+  ok?: boolean;
+  busy?: boolean;
+  requestId?: string;
+  audioMs?: number;
+  results?: BenchmarkItem[];
+  error?: string;
+};
+
 export default function ConfigPage({
   tweaks,
   setTweaks,
@@ -40,6 +59,8 @@ export default function ConfigPage({
     retainAudio: Boolean(appSettings.privacy?.store_audio_history ?? false),
     retainHistory: Boolean(appSettings.privacy?.retain_history ?? true),
     enginePreload: String(appSettings.performance?.engine_preload ?? "app_start"),
+    streamingAdaptiveFinalize: Boolean(appSettings.performance?.streaming_adaptive_finalize_enabled ?? true),
+    pasteFastPath: Boolean(appSettings.performance?.paste_fast_path_enabled ?? true),
     autoSendEnter: Boolean(appSettings.paste?.auto_send_enter ?? false),
     restoreClipboard: Boolean(appSettings.paste?.restore_clipboard ?? false),
     pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
@@ -60,6 +81,10 @@ export default function ConfigPage({
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [benchmarkStatus, setBenchmarkStatus] = useState("");
+  const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkItem[]>([]);
+  const [benchmarkAudioMs, setBenchmarkAudioMs] = useState<number | null>(null);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
 
   useEffect(() => {
     setSettings((current) => ({
@@ -69,6 +94,8 @@ export default function ConfigPage({
       retainAudio: Boolean(appSettings.privacy?.store_audio_history ?? false),
       retainHistory: Boolean(appSettings.privacy?.retain_history ?? true),
       enginePreload: String(appSettings.performance?.engine_preload ?? "app_start"),
+      streamingAdaptiveFinalize: Boolean(appSettings.performance?.streaming_adaptive_finalize_enabled ?? true),
+      pasteFastPath: Boolean(appSettings.performance?.paste_fast_path_enabled ?? true),
       autoSendEnter: Boolean(appSettings.paste?.auto_send_enter ?? false),
       restoreClipboard: Boolean(appSettings.paste?.restore_clipboard ?? false),
       pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
@@ -87,6 +114,8 @@ export default function ConfigPage({
     if (k === "retainHistory") setSetting("privacy", "retain_history", v);
     if (k === "retainAudio") setSetting("privacy", "store_audio_history", v);
     if (k === "enginePreload") setSetting("performance", "engine_preload", v);
+    if (k === "streamingAdaptiveFinalize") setSetting("performance", "streaming_adaptive_finalize_enabled", v);
+    if (k === "pasteFastPath") setSetting("performance", "paste_fast_path_enabled", v);
     if (k === "ollamaUrl") setSetting("llm", "ollama_url", v);
     if (k === "openaiCompatUrl") setSetting("llm", "openai_compat_url", v);
   };
@@ -147,6 +176,56 @@ export default function ConfigPage({
         }
       })
       .catch(() => setNvidiaKeyStatus("Test failed"));
+  };
+
+  const parseBenchmarkResult = (payload: string): BenchmarkResult => {
+    try {
+      return JSON.parse(payload) as BenchmarkResult;
+    } catch {
+      return { ok: false, error: "Benchmark returned an unreadable response.", results: [] };
+    }
+  };
+
+  const applyBenchmarkResult = (payload: string) => {
+    const result = parseBenchmarkResult(payload);
+    if (result.busy) {
+      setBenchmarkBusy(true);
+      setBenchmarkStatus("Benchmark running...");
+      return;
+    }
+    setBenchmarkBusy(false);
+    setBenchmarkAudioMs(typeof result.audioMs === "number" ? result.audioMs : null);
+    setBenchmarkResults(result.results || []);
+    if (!result.ok) {
+      setBenchmarkStatus(result.error || "Benchmark failed.");
+      return;
+    }
+    const completed = (result.results || []).filter((item) => item.ok).length;
+    setBenchmarkStatus(completed ? `${completed} provider${completed === 1 ? "" : "s"} completed.` : "Benchmark completed with no transcripts.");
+  };
+
+  useEffect(() => {
+    const onBenchmark = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      applyBenchmarkResult(detail || "");
+    };
+    window.addEventListener("whisperer:sttBenchmarkResult", onBenchmark as EventListener);
+    return () => window.removeEventListener("whisperer:sttBenchmarkResult", onBenchmark as EventListener);
+  }, []);
+
+  const runBenchmark = () => {
+    if (!window.whisperer?.runSttBenchmark) {
+      setBenchmarkStatus("Benchmark is not available in this build.");
+      return;
+    }
+    setBenchmarkBusy(true);
+    setBenchmarkStatus("Starting benchmark...");
+    window.whisperer.runSttBenchmark()
+      .then(applyBenchmarkResult)
+      .catch(() => {
+        setBenchmarkBusy(false);
+        setBenchmarkStatus("Could not start benchmark.");
+      });
   };
 
   const labelToHotkey = (key: string) => {
@@ -336,7 +415,7 @@ export default function ConfigPage({
       <Card style={{ marginBottom: 18 }}>
         <Row
           title="Dictation hotkey"
-          subtitle={recordingShortcut ? "Press up to four keys, then save." : "Hold while speaking. Release to transcribe and paste."}
+          subtitle={recordingShortcut ? "Press up to four keys, then save." : "Hold to dictate. Double-tap or press Alt while holding to lock hands-free."}
           control={
             <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
               <KeyCombo keys={dictationKeys} />
@@ -364,6 +443,50 @@ export default function ConfigPage({
              control={<Toggle checked={settings.restoreClipboard} onChange={(v) => set("restoreClipboard", v)} />} />
         <Row title="Auto-send Enter after paste" subtitle="Submit chat messages automatically. Avoid in code editors."
              control={<Toggle checked={settings.autoSendEnter} onChange={(v) => set("autoSendEnter", v)} />} divider={false} />
+      </Card>
+
+      <SectionTitle>Performance</SectionTitle>
+      <Card style={{ marginBottom: 18 }}>
+        <Row title="Adaptive streaming finalization" subtitle="Shorten the final wait when hosted Parakeet streaming has stable text."
+             control={<Toggle checked={settings.streamingAdaptiveFinalize} onChange={(v) => set("streamingAdaptiveFinalize", v)} />} />
+        <Row title="Known-good paste fast path" subtitle="Use the lower paste settle delay for apps that handle clipboard updates reliably."
+             control={<Toggle checked={settings.pasteFastPath} onChange={(v) => set("pasteFastPath", v)} />} />
+        <Row
+          title="STT provider benchmark"
+          subtitle={benchmarkAudioMs ? `Last sample: ${(benchmarkAudioMs / 1000).toFixed(1)}s` : "Compare saved providers on the last dictation sample."}
+          control={
+            <Btn size="sm" variant="secondary" icon="wave" onClick={runBenchmark} disabled={benchmarkBusy}>
+              {benchmarkBusy ? "Running" : "Benchmark"}
+            </Btn>
+          }
+          divider={Boolean(benchmarkStatus || benchmarkResults.length)}
+        />
+        {(benchmarkStatus || benchmarkResults.length > 0) && (
+          <div style={{ paddingTop: 12, display: "grid", gap: 8 }}>
+            {benchmarkStatus && <div style={{ fontSize: 12.5, color: benchmarkStatus.includes("failed") || benchmarkStatus.includes("Could not") ? "var(--rec)" : "var(--ink-2)" }}>{benchmarkStatus}</div>}
+            {benchmarkResults.map((item) => (
+              <div
+                key={`${item.provider || item.label}-${item.label}`}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(180px, 1fr) 82px minmax(160px, 1.3fr)",
+                  gap: 10,
+                  alignItems: "center",
+                  fontSize: 12,
+                  color: "var(--ink-2)",
+                }}
+              >
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                <span className="mono" style={{ color: item.ok ? "var(--ok)" : item.skipped ? "var(--ink-3)" : "var(--rec)" }}>
+                  {typeof item.elapsedMs === "number" ? `${Math.round(item.elapsedMs)} ms` : item.skipped ? "skipped" : "error"}
+                </span>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: item.ok ? "var(--ink-3)" : "var(--rec)" }}>
+                  {item.ok ? (item.text || "Transcript returned") : (item.error || "Failed")}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       <SectionTitle>Privacy</SectionTitle>

@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from PyQt6.QtCore import Qt, QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QIcon
+from PyQt6.QtGui import QColor, QIcon, QPalette
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -55,6 +55,8 @@ NOISY_ENGINE_LINE_PARTS = (
     "error_handling_strategy",
     "no telemetry data will be collected",
 )
+WINDOW_BACKING_HEX = "#f8f7f3"
+WINDOW_BACKING_COLOR = QColor(248, 247, 243)
 
 QUIET_MODEL_ENV = {
     "NEMO_LOGGING_LEVEL": "ERROR",
@@ -75,11 +77,25 @@ class _DwmMargins(ctypes.Structure):
 
 MODEL_OPTIONS = [
     {
-        "value": "nvidia/parakeet-unified-en-0.6b",
-        "label": "NVIDIA Parakeet Unified 0.6B",
+        "value": "nvidia/parakeet-tdt-0.6b-v2",
+        "label": "NVIDIA Parakeet TDT 0.6B (RNNT streaming)",
         "size": "0.6 B",
         "badge": "Local",
-        "speed": "Fastest",
+        "speed": "Streaming",
+    },
+    {
+        "value": "nvidia/parakeet-ctc-0.6b",
+        "label": "NVIDIA Parakeet CTC 0.6B (RNNT streaming)",
+        "size": "0.6 B",
+        "badge": "Local",
+        "speed": "Streaming",
+    },
+    {
+        "value": "nvidia/parakeet-unified-en-0.6b",
+        "label": "NVIDIA Parakeet Unified 0.6B (RNNT streaming)",
+        "size": "0.6 B",
+        "badge": "Local",
+        "speed": "Streaming",
     },
     {
         "value": "deepdml/faster-whisper-large-v3-turbo-ct2",
@@ -141,6 +157,7 @@ class Bridge(QObject):
 
     engineStateChanged = pyqtSignal(str)
     settingsChanged = pyqtSignal(str)
+    sttBenchmarkFinished = pyqtSignal(str)
 
     def __init__(self, window: "MainWindow"):
         super().__init__(window)
@@ -169,6 +186,7 @@ class Bridge(QObject):
     def startDrag(self):
         if self._window.isMaximized():
             return
+        self._window.prepare_for_system_move()
         handle = self._window.windowHandle()
         if handle:
             handle.startSystemMove()
@@ -177,6 +195,7 @@ class Bridge(QObject):
     def startResize(self):
         if self._window.isMaximized():
             return
+        self._window.prepare_for_system_move()
         handle = self._window.windowHandle()
         if handle:
             handle.startSystemResize(Qt.Edge.RightEdge | Qt.Edge.BottomEdge)
@@ -257,6 +276,10 @@ class Bridge(QObject):
     @pyqtSlot(result=str)
     def transcribeLastDictation(self) -> str:
         return self._window.transcribe_last_dictation()
+
+    @pyqtSlot(result=str)
+    def runSttBenchmark(self) -> str:
+        return self._window.run_stt_benchmark()
 
     @pyqtSlot(int, result=str)
     def deleteDictation(self, dictation_id: int) -> str:
@@ -346,6 +369,7 @@ _BRIDGE_SHIM = r"""
         addReplacementRule: function(matchText, replaceWith) { return callResult("addReplacementRule", matchText, replaceWith); },
         copyText: function(text) { return callResult("copyText", text); },
         transcribeLastDictation: function() { return callResult("transcribeLastDictation"); },
+        runSttBenchmark: function() { return callResult("runSttBenchmark"); },
         deleteDictation: function(dictationId) { return callResult("deleteDictation", dictationId); },
         purgeHistory: function() { return callResult("purgeHistory"); },
         addMode: function(name) { return callResult("addMode", name || "New Mode"); },
@@ -367,6 +391,9 @@ _BRIDGE_SHIM = r"""
       });
       b.settingsChanged.connect(function(snapshot) {
         window.dispatchEvent(new CustomEvent("whisperer:settings", { detail: snapshot }));
+      });
+      b.sttBenchmarkFinished.connect(function(result) {
+        window.dispatchEvent(new CustomEvent("whisperer:sttBenchmarkResult", { detail: result }));
       });
       window.dispatchEvent(new Event("whisperer:ready"));
     });
@@ -407,10 +434,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Whisperer v{config.VERSION}")
         self.setWindowIcon(QIcon(app_icon_path()))
+        self.setObjectName("whisperer-main-window")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAutoFillBackground(True)
         self.setMinimumSize(980, 640)
         self.resize(1280, 840)
+        self._apply_widget_backing(self)
 
         self.settings = load_settings()
         self._gpu_options = self._load_gpu_options()
@@ -430,6 +460,8 @@ class MainWindow(QMainWindow):
         self._backup_transcription_error = ""
         self._backup_transcription_request_id = ""
         self._backup_transcription_source = ""
+        self._stt_benchmark_busy = False
+        self._stt_benchmark_request_id = ""
         self._microphone_cache: list[dict[str, str]] = []
         self._microphone_cache_ts = 0.0
         self._input_channel_count_cache: dict[str, tuple[float, int]] = {}
@@ -450,25 +482,33 @@ class MainWindow(QMainWindow):
         self._backup_transcription_timeout_timer = QTimer(self)
         self._backup_transcription_timeout_timer.setSingleShot(True)
         self._backup_transcription_timeout_timer.timeout.connect(self._on_backup_transcription_timeout)
+        self._stt_benchmark_timeout_timer = QTimer(self)
+        self._stt_benchmark_timeout_timer.setSingleShot(True)
+        self._stt_benchmark_timeout_timer.timeout.connect(self._on_stt_benchmark_timeout)
         self.loadingPreviewRequested.connect(self._show_loading_preview)
         self.backupTranscriptionFinished.connect(self._finish_last_dictation_transcription)
         if self._loading_preview_enabled:
             self._register_loading_preview_shortcuts()
 
         self.view = QWebEngineView(self)
+        self.view.setObjectName("whisperer-web-view")
         self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.view.setStyleSheet("")
+        self.view.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+        self.view.setAutoFillBackground(True)
+        self._apply_widget_backing(self.view)
         self.page = DiagnosticPage(self)
         self.view.setPage(self.page)
         web_settings = self.view.settings()
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        self.view.page().setBackgroundColor(QColor(248, 247, 243))
+        self.view.page().setBackgroundColor(WINDOW_BACKING_COLOR)
 
         central = QWidget(self)
+        central.setObjectName("whisperer-main-central")
         central.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        central.setStyleSheet("")
+        central.setAutoFillBackground(True)
+        self._apply_widget_backing(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -495,6 +535,32 @@ class MainWindow(QMainWindow):
 
         if self._loading_preview_enabled:
             self.engine_start_timer.start(400)
+
+    def _apply_widget_backing(self, widget):
+        palette = widget.palette()
+        palette.setColor(QPalette.ColorRole.Window, WINDOW_BACKING_COLOR)
+        palette.setColor(QPalette.ColorRole.Base, WINDOW_BACKING_COLOR)
+        widget.setPalette(palette)
+        object_name = widget.objectName()
+        if object_name:
+            widget.setStyleSheet(f"#{object_name} {{ background-color: {WINDOW_BACKING_HEX}; }}")
+        else:
+            widget.setStyleSheet(f"background-color: {WINDOW_BACKING_HEX};")
+
+    def prepare_for_system_move(self):
+        self._apply_widget_backing(self)
+        central = self.centralWidget()
+        if central:
+            self._apply_widget_backing(central)
+        self._apply_widget_backing(self.view)
+        self.view.page().setBackgroundColor(WINDOW_BACKING_COLOR)
+        self.view.update()
+        self.update()
+        self.view.repaint()
+        self.repaint()
+        app = QApplication.instance()
+        if app:
+            app.processEvents()
 
     def _on_load_finished(self, ok: bool):
         if not ok:
@@ -828,6 +894,8 @@ class MainWindow(QMainWindow):
         return {
             "groq": _masked("groq", "groq_whisper"),
             "nvidia": _masked("nvidia", "nvidia_parakeet"),
+            "openai": _masked("openai"),
+            "deepgram": _masked("deepgram"),
         }
 
     def transcribe_last_dictation(self) -> str:
@@ -880,6 +948,98 @@ class MainWindow(QMainWindow):
             return True
         except Exception:
             return False
+
+    def run_stt_benchmark(self) -> str:
+        if self._stt_benchmark_busy:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "busy": True,
+                    "requestId": self._stt_benchmark_request_id,
+                    "message": "Benchmark already running.",
+                },
+                separators=(",", ":"),
+            )
+        payload = self._dictation_backup_payload()
+        if not payload.get("available"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Record a dictation first so every provider can benchmark the same audio sample.",
+                    "results": [],
+                },
+                separators=(",", ":"),
+            )
+        if self._engine_state != "running" or not self.process or self.process.poll() is not None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Start the dictation engine before running the STT benchmark.",
+                    "results": [],
+                },
+                separators=(",", ":"),
+            )
+
+        request_id = str(int(time.time() * 1000))
+        self._stt_benchmark_busy = True
+        self._stt_benchmark_request_id = request_id
+        self._stt_benchmark_timeout_timer.start(240000)
+        if not self._send_engine_benchmark_request(request_id):
+            self._stt_benchmark_timeout_timer.stop()
+            self._stt_benchmark_busy = False
+            self._stt_benchmark_request_id = ""
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Could not send the benchmark request to the engine.",
+                    "results": [],
+                },
+                separators=(",", ":"),
+            )
+        return json.dumps({"ok": True, "busy": True, "requestId": request_id}, separators=(",", ":"))
+
+    def _send_engine_benchmark_request(self, request_id: str) -> bool:
+        if (
+            self._engine_state != "running"
+            or not self.process
+            or self.process.poll() is not None
+            or not self.process.stdin
+        ):
+            return False
+        try:
+            command = json.dumps(
+                {"command": "benchmark_stt", "requestId": request_id},
+                separators=(",", ":"),
+            )
+            self.process.stdin.write(command + "\n")
+            self.process.stdin.flush()
+            return True
+        except Exception:
+            return False
+
+    def _finish_stt_benchmark(self, payload: dict[str, Any]):
+        request_id = str(payload.get("requestId") or "")
+        if request_id and request_id != self._stt_benchmark_request_id:
+            return
+        self._stt_benchmark_timeout_timer.stop()
+        self._stt_benchmark_busy = False
+        self._stt_benchmark_request_id = ""
+        try:
+            self.bridge.sttBenchmarkFinished.emit(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            pass
+
+    def _on_stt_benchmark_timeout(self):
+        if not self._stt_benchmark_busy:
+            return
+        self._finish_stt_benchmark(
+            {
+                "requestId": self._stt_benchmark_request_id,
+                "ok": False,
+                "error": "The STT benchmark took too long and was stopped.",
+                "results": [],
+            }
+        )
 
     def _transcribe_last_dictation_worker(self, request_id: str):
         try:
@@ -1805,6 +1965,15 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
             except OSError:
                 pass
             self._engine_ready_file = ""
+        if self._stt_benchmark_busy:
+            self._finish_stt_benchmark(
+                {
+                    "requestId": self._stt_benchmark_request_id,
+                    "ok": False,
+                    "error": "The engine was stopped before the STT benchmark finished.",
+                    "results": [],
+                }
+            )
         self._set_engine_state("stopped")
 
     def restart_engine(self):
@@ -2027,6 +2196,9 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
             if line.startswith("BACKUP_TRANSCRIPTION_RESULT "):
                 self._handle_backup_transcription_engine_result(line)
                 continue
+            if line.startswith("STT_BENCHMARK_RESULT "):
+                self._handle_stt_benchmark_engine_result(line)
+                continue
             if self._is_noisy_engine_line(line):
                 continue
             changed = True
@@ -2057,6 +2229,15 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
                     "",
                     "The engine stopped before the last dictation could be transcribed.",
                 )
+            if self._stt_benchmark_busy:
+                self._finish_stt_benchmark(
+                    {
+                        "requestId": self._stt_benchmark_request_id,
+                        "ok": False,
+                        "error": "The engine stopped before the STT benchmark finished.",
+                        "results": [],
+                    }
+                )
             if (
                 return_code == ENGINE_FORCE_STOP_RESTART_CODE
                 and not self._paused
@@ -2086,6 +2267,18 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         text = str(payload.get("text") or "")
         error = str(payload.get("error") or "")
         self.backupTranscriptionFinished.emit(request_id, ok, text, error)
+
+    def _handle_stt_benchmark_engine_result(self, line: str):
+        try:
+            payload = json.loads(line.split(" ", 1)[1])
+        except Exception as exc:
+            payload = {
+                "requestId": self._stt_benchmark_request_id,
+                "ok": False,
+                "error": f"Could not read benchmark response: {exc}",
+                "results": [],
+            }
+        self._finish_stt_benchmark(payload)
 
     def closeEvent(self, event):
         if not self._force_quitting and self.tray and self.tray.isVisible():
