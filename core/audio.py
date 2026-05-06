@@ -27,6 +27,70 @@ AUTO_CHANNEL_SCAN_LIMIT = 8
 AUTO_CHANNEL_CAPTURE_LIMIT = 2
 AUTO_CHANNEL_MIN_RMS = 0.00008
 AUTO_CHANNEL_DOMINANCE = 1.6
+VIRTUAL_INPUT_NAME_MARKERS = (
+    "steam streaming",
+    "vb-audio",
+    "virtual cable",
+    "cable output",
+    "voicemeeter",
+    "nvidia broadcast",
+    "virtual audio",
+    "wave extensible",
+)
+REAL_INPUT_NAME_MARKERS = (
+    "microphone",
+    "mic",
+    "line",
+    "input",
+    "universal audio",
+    "focusrite",
+    "shure",
+    "yeti",
+    "rode",
+    "elgato",
+    "logitech",
+    "webcam",
+)
+
+
+def _input_device_score(device: dict, default_index: int | None = None, index: int | None = None) -> int:
+    """Rank capture devices for automatic selection without overriding user choice."""
+    try:
+        if int(device.get("max_input_channels", 0)) <= 0:
+            return -10_000
+    except Exception:
+        return -10_000
+    name = str(device.get("name", "") or "").lower()
+    score = 0
+    if index is not None and default_index is not None and index == default_index:
+        score += 20
+    if any(marker in name for marker in REAL_INPUT_NAME_MARKERS):
+        score += 40
+    if any(marker in name for marker in VIRTUAL_INPUT_NAME_MARKERS):
+        score -= 80
+    try:
+        channels = int(device.get("max_input_channels", 0))
+        score += min(channels, 4)
+    except Exception:
+        pass
+    return score
+
+
+def _preferred_default_input_device_index(devices) -> int | None:
+    try:
+        default_index = sd.default.device[0]
+    except Exception:
+        default_index = None
+    best_index = None
+    best_score = -10_000
+    for index, device in enumerate(devices):
+        score = _input_device_score(device, default_index=default_index, index=index)
+        if score > best_score:
+            best_index = index
+            best_score = score
+    if best_index is None or best_score <= -10_000:
+        return None
+    return best_index
 
 
 class AudioRecorder:
@@ -279,6 +343,9 @@ class AudioRecorder:
                 ):
                     selected_index = index
                     break
+
+        if selected_index is None:
+            selected_index = _preferred_default_input_device_index(devices)
 
         try:
             device_info = (

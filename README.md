@@ -41,6 +41,15 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.8
+
+Whisperer 6.0.8 fixes a first-run microphone selection issue found while
+testing 6.0.7. When no explicit input device is configured, Whisperer now avoids
+obvious virtual or streaming capture endpoints such as Steam Streaming
+Microphone, virtual cables, and NVIDIA virtual audio when a real microphone,
+line input, or audio interface input is available. Explicit user-selected
+microphones still win.
+
 ## Version 6.0.7
 
 Whisperer 6.0.7 adds another public-install hardening pass. The installer now
