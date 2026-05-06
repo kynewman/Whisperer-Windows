@@ -1,6 +1,6 @@
 {
   "name": "whisperer-app",
-  "version": "6.0.5",
+  "version": "6.0.6",
   "private": true,
   "description": "Embedded React dashboard for the Whisperer PyQt shell",
   "scripts": {

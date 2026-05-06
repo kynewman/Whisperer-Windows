@@ -266,8 +266,22 @@ def is_required_qt_resource(dest: str) -> bool:
     normalized = dest.replace("\\", "/").lower().lstrip("./")
     return (
         normalized.startswith("pyqt6/qt6/resources/")
-        and os.path.basename(normalized) in {"v8_context_snapshot.bin", "v8_context_snapshot.debug.bin"}
+        and os.path.basename(normalized) in {"v8_context_snapshot.bin"}
     )
+
+
+def is_excluded_qt_payload(dest: str) -> bool:
+    normalized = dest.replace("\\", "/").lower().lstrip("./")
+    basename = os.path.basename(normalized)
+    if normalized.startswith("pyqt6/qt6/qml/"):
+        return True
+    if normalized.startswith("pyqt6/qt6/resources/"):
+        if basename.startswith("qtwebengine_devtools_resources"):
+            return True
+        if basename.endswith((".debug.pak", ".debug.bin")):
+            return True
+    return False
+
 
 def exclude_large_files(binaries, datas):
     """Filter out model weights and cache files from the bundle."""
@@ -276,6 +290,8 @@ def exclude_large_files(binaries, datas):
         lower = dest.lower()
         if is_required_qt_resource(dest):
             filtered_binaries.append((dest, src, typecode))
+            continue
+        if is_excluded_qt_payload(dest):
             continue
         if is_excluded_bundle_package(dest):
             continue
@@ -290,6 +306,8 @@ def exclude_large_files(binaries, datas):
         lower = dest.lower()
         if is_required_qt_resource(dest):
             filtered_datas.append((dest, src, typecode))
+            continue
+        if is_excluded_qt_payload(dest):
             continue
         if is_excluded_bundle_package(dest):
             continue

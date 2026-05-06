@@ -41,6 +41,20 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.6
+
+Whisperer 6.0.6 is a final packaging polish pass for public installs. The
+PyInstaller bundle now excludes unused Qt WebEngine debug/devtools/QML payloads
+while preserving the resources needed for the embedded dashboard, which lowers
+download size and reduces install surface area. Release smoke checks now derive
+the expected installer version from `config.py` and fail if debug Qt payloads or
+model weights creep back into the bundle.
+
+The optional Vosk live-preview downloader now uses a timeout-aware request and
+validates archive paths before extraction. Diagnostics collection also captures
+more machine-level context for cases where the app cannot get far enough to
+write normal launcher logs.
+
 ## Version 6.0.5
 
 Whisperer 6.0.5 adds always-on startup diagnostics for severely broken
@@ -141,6 +155,8 @@ whisperer.spec        PyInstaller build recipe
 - `models/` is intentionally kept out of Git because it contains large local
   caches for Parakeet, Whisper, Vosk, and related runtimes.
 - The full Vosk model that used to live at the repository root is no longer
-  used. Live preview uses the smaller auto-managed model under `models/vosk`.
+  used. Live preview only loads a cached small Vosk model under `models/vosk`.
+  Whisperer will not download that optional model unless
+  `WHISPERER_ENABLE_VOSK_DOWNLOAD=1` is set.
 - Generated folders such as `build/`, `dist/`, `node_modules/`, and old Electron
   release outputs can be regenerated and are ignored.

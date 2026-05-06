@@ -3,6 +3,7 @@ setlocal
 
 set "LOGDIR=%LOCALAPPDATA%\Whisperer\logs"
 if "%LOCALAPPDATA%"=="" set "LOGDIR=%TEMP%\Whisperer\logs"
+if "%LOGDIR%"=="\Whisperer\logs" set "LOGDIR=%TMP%\Whisperer\logs"
 if not "%WHISPERER_LOG_DIR%"=="" set "LOGDIR=%WHISPERER_LOG_DIR%"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>nul
 

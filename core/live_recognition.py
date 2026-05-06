@@ -8,6 +8,7 @@ import os
 import json
 import threading
 import queue
+import shutil
 import zipfile
 import urllib.request
 import numpy as np
@@ -18,6 +19,23 @@ VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
 # More reliable fallback mirrors for the model
 VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 VOSK_DOWNLOAD_ENV = "WHISPERER_ENABLE_VOSK_DOWNLOAD"
+
+
+def _download_file(url: str, target: str, timeout_s: int = 60) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": f"Whisperer/{config.VERSION}"})
+    with urllib.request.urlopen(request, timeout=timeout_s) as response, open(target, "wb") as output:
+        shutil.copyfileobj(response, output)
+
+
+def _safe_extract(zip_path: str, target_dir: str) -> None:
+    target_root = os.path.abspath(target_dir)
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        for member in zip_ref.infolist():
+            destination = os.path.abspath(os.path.join(target_root, member.filename))
+            if destination != target_root and not destination.startswith(target_root + os.sep):
+                raise ValueError(f"Unsafe path in Vosk archive: {member.filename}")
+        zip_ref.extractall(target_root)
+
 
 class LiveRecognizer:
     """
@@ -61,14 +79,22 @@ class LiveRecognizer:
             zip_path = os.path.join(vosk_base_dir, "vosk_model.zip")
             
             try:
-                urllib.request.urlretrieve(VOSK_MODEL_URL, zip_path)
+                _download_file(VOSK_MODEL_URL, zip_path)
             except Exception as e:
                 print(f"Failed to download Vosk model: {e}")
                 return
                 
             print("Extracting Vosk model...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(vosk_base_dir)
+            try:
+                _safe_extract(zip_path, vosk_base_dir)
+            except Exception as e:
+                print(f"Failed to extract Vosk model: {e}")
+                try:
+                    if os.path.exists(zip_path):
+                        os.remove(zip_path)
+                except OSError:
+                    pass
+                return
                 
             if os.path.exists(zip_path):
                 os.remove(zip_path)

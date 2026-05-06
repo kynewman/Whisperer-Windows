@@ -16,6 +16,17 @@ BUNDLE_ROOT = DIST_ROOT / "Whisperer"
 INTERNAL = BUNDLE_ROOT / "_internal"
 
 
+def release_version() -> str:
+    try:
+        text = (PROJECT_ROOT / "config.py").read_text(encoding="utf-8")
+        match = re.search(r"^VERSION\s*=\s*[\"']([^\"']+)[\"']", text, re.MULTILINE)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
 def check(label: str, ok: bool, detail: str = "") -> bool:
     status = "OK" if ok else "FAIL"
     print(f"{status} - {label}: {detail}")
@@ -55,6 +66,20 @@ def has_no_model_weights() -> bool:
     return check("bundle excludes local model weights", not offenders, ", ".join(str(p) for p in offenders[:3]))
 
 
+def has_no_debug_qt_payload() -> bool:
+    offenders: list[Path] = []
+    qml_root = INTERNAL / "PyQt6" / "Qt6" / "qml"
+    if qml_root.exists():
+        offenders.append(qml_root)
+    resource_root = INTERNAL / "PyQt6" / "Qt6" / "resources"
+    if resource_root.exists():
+        for path in resource_root.iterdir():
+            name = path.name.lower()
+            if name.startswith("qtwebengine_devtools_resources") or name.endswith((".debug.pak", ".debug.bin")):
+                offenders.append(path)
+    return check("bundle excludes Qt debug/devtools/QML payload", not offenders, ", ".join(str(p) for p in offenders[:3]))
+
+
 def authenticode_status(path: Path) -> str:
     if os.name != "nt" or not path.exists():
         return "Unavailable"
@@ -79,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-signed", action="store_true", help="Fail if the installer or exe is not signed.")
     args = parser.parse_args(argv)
 
-    version = "6.0.5"
+    version = release_version()
     installer = DIST_ROOT / f"Whisperer-Setup-{version}.exe"
     exe = BUNDLE_ROOT / "Whisperer.exe"
     ok = True
@@ -97,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     ok &= file_exists("VC runtime", INTERNAL / "VCRUNTIME140.dll")
     ok &= has_no_remote_assets()
     ok &= has_no_model_weights()
+    ok &= has_no_debug_qt_payload()
 
     installer_sig = authenticode_status(installer)
     exe_sig = authenticode_status(exe)
