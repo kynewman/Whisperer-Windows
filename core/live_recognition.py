@@ -1,6 +1,7 @@
 """
 Live speech recognition using a lightweight Vosk model.
-Automatically downloads 'vosk-model-small-en-us-0.15' on first run for zero-setup live dictation previews.
+Loads an already-cached 'vosk-model-small-en-us-0.15' model for live dictation
+previews. Set WHISPERER_ENABLE_VOSK_DOWNLOAD=1 to allow the optional download.
 """
 
 import os
@@ -16,6 +17,7 @@ import config
 VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
 # More reliable fallback mirrors for the model
 VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+VOSK_DOWNLOAD_ENV = "WHISPERER_ENABLE_VOSK_DOWNLOAD"
 
 class LiveRecognizer:
     """
@@ -48,6 +50,13 @@ class LiveRecognizer:
         model_dir = os.path.join(vosk_base_dir, VOSK_MODEL_NAME)
         
         if not os.path.exists(model_dir) or not os.listdir(model_dir):
+            if os.environ.get(VOSK_DOWNLOAD_ENV) != "1":
+                print(
+                    f"Vosk live preview model is not cached; skipping optional download. "
+                    f"Set {VOSK_DOWNLOAD_ENV}=1 to enable it.",
+                    flush=True,
+                )
+                return
             print(f"Downloading Vosk live preview model ({VOSK_MODEL_NAME})...")
             zip_path = os.path.join(vosk_base_dir, "vosk_model.zip")
             

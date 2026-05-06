@@ -135,7 +135,7 @@ const DEFAULT_MODELS: BridgeOption[] = [
 const API_GPU_VALUES = new Set(["groq_api", "grok_api", "nvidia_api"]);
 const DEFAULT_GPUS: BridgeOption[] = [
   { value: "nvidia_api", label: "NVIDIA API Parakeet" },
-  { value: "auto", label: "Auto (primary CUDA GPU)" },
+  { value: "groq_api", label: "Groq API (Whisper)" },
 ];
 const DEFAULT_MICROPHONES: MicOption[] = [{ value: "default", label: "System default microphone", hint: "Auto" }];
 const DEFAULT_CHANNELS: BridgeOption[] = [{ value: "0", label: "Channel 1" }];
@@ -257,7 +257,7 @@ function parseSnapshot(raw: string | AppSnapshot | undefined): AppSnapshot | nul
 export default function App() {
   const [activePage, setActivePage] = useState<NavKey>("home");
   const [engineState, setEngineState] = useState<EngineState>("stopped");
-  const [version, setVersion] = useState("6.0.4");
+  const [version, setVersion] = useState("6.0.5");
   const [settings, setSettings] = useState<AppSettings>({});
   const [models, setModels] = useState<BridgeOption[]>(DEFAULT_MODELS);
   const [gpus, setGpus] = useState<BridgeOption[]>(DEFAULT_GPUS);
@@ -434,6 +434,22 @@ export default function App() {
   }, [applySnapshot, confirmLocalModelDownload, needsLocalModelDownloadConfirm]);
 
   const setGpu = useCallback(async (value: string) => {
+    if (!API_GPU_VALUES.has(value)) {
+      if (window.whisperer?.localEngineStatus) {
+        try {
+          const status = JSON.parse(await window.whisperer.localEngineStatus(model));
+          if (!status.available) {
+            window.alert(status.message || "Local GPU transcription is not available in this installation.");
+            requestSnapshot();
+            return;
+          }
+        } catch {
+          window.alert("Whisperer could not verify the local GPU runtime on this computer.");
+          requestSnapshot();
+          return;
+        }
+      }
+    }
     if (!API_GPU_VALUES.has(value) && window.whisperer?.modelCacheStatus) {
       try {
         const payload = JSON.parse(await window.whisperer.modelCacheStatus(model));
@@ -444,7 +460,7 @@ export default function App() {
     }
     setGpuState(value);
     window.whisperer?.setGpu?.(value).then(applySnapshot).catch(() => {});
-  }, [applySnapshot, confirmLocalModelDownload, model]);
+  }, [applySnapshot, confirmLocalModelDownload, model, requestSnapshot]);
 
   const setMic = useCallback((value: string) => {
     setMicState(value);
@@ -548,6 +564,7 @@ export default function App() {
                 dictationKeys={dictationKeys}
                 dictationBackup={dictationBackup}
                 onTranscribeLastDictation={transcribeLastDictation}
+                apiKeys={apiKeys}
               />
             )}
             {activePage === "modes" && <ModesPage modes={modesData} applySnapshot={applySnapshot} />}

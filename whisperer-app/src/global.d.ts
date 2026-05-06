@@ -19,6 +19,7 @@ declare global {
       setModel?: (value: string) => Promise<string>;
       setGpu?: (value: string) => Promise<string>;
       modelCacheStatus?: (value: string) => Promise<string>;
+      localEngineStatus?: (value: string) => Promise<string>;
       setApiKey?: (service: string, value: string) => Promise<string>;
       testApiKey?: (service: string) => Promise<string>;
       setMicrophone?: (value: string) => Promise<string>;

@@ -60,10 +60,6 @@ for source_dir in ("core", "ui", "rules", "scripts"):
     SOURCE_DATAS.extend(collect_source_tree(source_dir))
 SOURCE_DATAS.extend(collect_source_tree("assets"))
 SOURCE_DATAS.extend(collect_source_tree(os.path.join("whisperer-app", "dist")))
-SOURCE_DATAS.extend(collect_file_tree(
-    os.path.join(PYQT6_QT6_ROOT, "qml"),
-    os.path.join("PyQt6", "Qt6", "qml"),
-))
 
 APP_ICON = os.path.join(PROJECT_ROOT, "assets", "whisperer.ico")
 QT_BIN_DEST = os.path.join("PyQt6", "Qt6", "bin")
@@ -122,9 +118,6 @@ a = Analysis(
         "PyQt6.QtOpenGL",
         "PyQt6.QtPositioning",
         "PyQt6.QtPrintSupport",
-        "PyQt6.QtQml",
-        "PyQt6.QtQuick",
-        "PyQt6.QtQuickWidgets",
         "PyQt6.QtWidgets",
         "PyQt6.QtWebChannel",
         "PyQt6.QtWebEngineCore",
@@ -268,11 +261,22 @@ def is_excluded_bundle_package(dest: str) -> bool:
     first = normalized.split("/", 1)[0]
     return first in BUNDLE_PACKAGE_EXCLUDES
 
+
+def is_required_qt_resource(dest: str) -> bool:
+    normalized = dest.replace("\\", "/").lower().lstrip("./")
+    return (
+        normalized.startswith("pyqt6/qt6/resources/")
+        and os.path.basename(normalized) in {"v8_context_snapshot.bin", "v8_context_snapshot.debug.bin"}
+    )
+
 def exclude_large_files(binaries, datas):
     """Filter out model weights and cache files from the bundle."""
     filtered_binaries = []
     for dest, src, typecode in binaries:
         lower = dest.lower()
+        if is_required_qt_resource(dest):
+            filtered_binaries.append((dest, src, typecode))
+            continue
         if is_excluded_bundle_package(dest):
             continue
         if any(exc in lower for exc in MODEL_EXCLUDES):
@@ -284,6 +288,9 @@ def exclude_large_files(binaries, datas):
     filtered_datas = []
     for dest, src, typecode in datas:
         lower = dest.lower()
+        if is_required_qt_resource(dest):
+            filtered_datas.append((dest, src, typecode))
+            continue
         if is_excluded_bundle_package(dest):
             continue
         if any(exc in lower for exc in MODEL_EXCLUDES):

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any
 
+from core.diagnostics import append_log_line
 from core.paths import get_app_data_dir
 
 
@@ -139,23 +141,29 @@ def load_settings() -> dict[str, Any]:
     path = get_settings_path()
     if not os.path.exists(path):
         save_settings(DEFAULT_SETTINGS)
-        return dict(DEFAULT_SETTINGS)
+        return copy.deepcopy(DEFAULT_SETTINGS)
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return dict(DEFAULT_SETTINGS)
+    except (OSError, json.JSONDecodeError) as exc:
+        append_log_line("settings.log", f"settings load fallback path={path!r} error={exc!r}")
+        return copy.deepcopy(DEFAULT_SETTINGS)
 
     if not isinstance(loaded, dict):
-        return dict(DEFAULT_SETTINGS)
+        append_log_line("settings.log", f"settings load fallback path={path!r} error='root is not an object'")
+        return copy.deepcopy(DEFAULT_SETTINGS)
     return _merge_defaults(loaded, DEFAULT_SETTINGS)
 
 
 def save_settings(settings: dict[str, Any]):
     path = get_settings_path()
     tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-    os.replace(tmp_path, path)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        append_log_line("settings.log", f"settings save failed path={path!r} error={exc!r}")

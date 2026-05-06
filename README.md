@@ -41,6 +41,28 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.5
+
+Whisperer 6.0.5 adds always-on startup diagnostics for severely broken
+installations. The launcher, Qt shell, embedded Chromium/WebEngine renderer,
+React mount probe, engine launch, engine stdout, and fatal Python faults now
+write logs under `%LOCALAPPDATA%\Whisperer\logs` as soon as the process starts.
+If that folder cannot be created, Whisperer falls back to the user's temp
+folder. Blank WebEngine windows now show a diagnostic page instead of staying
+silent. The installer also adds Start Menu shortcuts to open the log folder,
+launch Whisperer in diagnostic mode, and collect a scrubbed diagnostics zip.
+
+This release also fixes the frozen WebEngine renderer crash by preserving Qt's
+V8 snapshot resources in the PyInstaller bundle. The installer is per-user by
+default, writes an Inno setup log, avoids recursive uninstall deletes, blocks
+unsupported 32-bit/older Windows installs, and includes complete Open With
+entries for the supported media extensions. Built dashboard assets use stable
+local filenames and no remote font dependency.
+
+Public auto-update installs now require a valid Authenticode signature on the
+downloaded installer. Unsigned local test builds can still be installed
+manually, but public releases should be signed before publication.
+
 ## Version 6.0.4
 
 Whisperer 6.0.4 fixes installed builds that could appear to do nothing on

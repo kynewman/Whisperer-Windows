@@ -5,6 +5,8 @@ models/
 .env
 *.egg-info/
 dist/
+!whisperer-app/dist/
+!whisperer-app/dist/**
 build/
 .claude/
 Design/

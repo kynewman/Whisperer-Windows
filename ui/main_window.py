@@ -20,17 +20,29 @@ import time
 import ctypes
 import urllib.error
 import urllib.request
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from PyQt6.QtCore import Qt, QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QIcon, QPalette
+from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPalette
 from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 import config
+from core.diagnostics import append_log_line, log_dir, scrub_text
+from core.paths import get_app_data_dir
 from core.settings import load_settings, save_settings
 from ui.app_icon import APP_USER_MODEL_ID, app_icon_path
 from ui.overlay import WaveformOverlay
@@ -58,6 +70,7 @@ NOISY_ENGINE_LINE_PARTS = (
 )
 WINDOW_BACKING_HEX = "#f8f7f3"
 WINDOW_BACKING_COLOR = QColor(248, 247, 243)
+UI_LOG = logging.getLogger("whisperer.ui")
 
 QUIET_MODEL_ENV = {
     "NEMO_LOGGING_LEVEL": "ERROR",
@@ -115,8 +128,7 @@ MODEL_OPTIONS = [
 ]
 
 
-def _react_index_url() -> QUrl:
-    """Return the file URL for the built React entrypoint."""
+def _react_index_candidates() -> list[str]:
     here = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(here)
     candidates: list[str] = []
@@ -129,6 +141,12 @@ def _react_index_url() -> QUrl:
             ]
         )
     candidates.append(os.path.join(project_root, "whisperer-app", "dist", "index.html"))
+    return candidates
+
+
+def _react_index_url() -> QUrl:
+    """Return the file URL for the built React entrypoint."""
+    candidates = _react_index_candidates()
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
             return QUrl.fromLocalFile(candidate)
@@ -248,6 +266,10 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def modelCacheStatus(self, value: str) -> str:
         return self._window.model_cache_status(value)
+
+    @pyqtSlot(str, result=str)
+    def localEngineStatus(self, value: str = "") -> str:
+        return self._window.local_engine_status_json(value)
 
     @pyqtSlot(str, str, result=str)
     def setApiKey(self, service: str, value: str) -> str:
@@ -416,14 +438,36 @@ _BRIDGE_SHIM = r"""
 """
 
 
+_WEB_DIAGNOSTIC_SHIM = r"""
+(function() {
+  if (window.__whispererDiagnosticsInstalled) {
+    return;
+  }
+  window.__whispererDiagnosticsInstalled = true;
+  window.addEventListener("error", function(event) {
+    console.error("[whisperer-diagnostic] window.error", event.message || "", event.filename || "", event.lineno || 0, event.colno || 0);
+  });
+  window.addEventListener("unhandledrejection", function(event) {
+    var reason = event.reason;
+    var text = reason && (reason.stack || reason.message) ? (reason.stack || reason.message) : String(reason);
+    console.error("[whisperer-diagnostic] unhandledrejection", text);
+  });
+  console.info("[whisperer-diagnostic] document", document.readyState, location.href, "scripts=" + document.scripts.length);
+})();
+"""
+
+
 def _apply_quiet_model_env(env: dict[str, str]) -> None:
     for key, value in QUIET_MODEL_ENV.items():
         env.setdefault(key, value)
 
 
 class DiagnosticPage(QWebEnginePage):
-    def __init__(self, window: "MainWindow"):
-        super().__init__(window)
+    def __init__(self, window: "MainWindow", profile: QWebEngineProfile | None = None):
+        if profile is not None:
+            super().__init__(profile, window)
+        else:
+            super().__init__(window)
         self._window = window
 
     def javaScriptConsoleMessage(self, level, message: str, line: int, source: str):
@@ -448,12 +492,30 @@ class MainWindow(QMainWindow):
         self.resize(1280, 840)
         self._apply_widget_backing(self)
 
+        self._web_load_started = False
+        self._web_load_finished = False
+        self._web_load_ok = False
+        self._web_load_progress = -1
+        self._web_timeout_reported = False
+        self._web_probe_pending = False
+        self._react_mounted = False
+        self._showing_web_ui_error = False
+        self._diagnostic_panel: QWidget | None = None
+        self._react_index_url = _react_index_url()
+        self._log_web_ui(
+            f"MainWindow init version={config.VERSION} pid={os.getpid()} "
+            f"frozen={bool(getattr(sys, 'frozen', False))} logDir={log_dir()}"
+        )
+        self._log_react_index_candidates()
+
         self.settings = load_settings()
+        self._local_engine_status_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         self._gpu_options = self._load_gpu_options()
         self._engine_output_queue: queue.Queue[str] = queue.Queue()
         self._engine_output_lines: list[str] = []
         self._engine_state = "stopped"
         self._engine_ready_file = ""
+        self._engine_log_dir = log_dir()
         self._paused = False
         self._force_quitting = False
         self.process: subprocess.Popen | None = None
@@ -502,12 +564,24 @@ class MainWindow(QMainWindow):
         self.view.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
         self.view.setAutoFillBackground(True)
         self._apply_widget_backing(self.view)
-        self.page = DiagnosticPage(self)
+        self.web_profile = QWebEngineProfile("Whisperer", self)
+        try:
+            webengine_dir = os.path.join(get_app_data_dir(), "webengine")
+            cache_dir = os.path.join(webengine_dir, "cache")
+            storage_dir = os.path.join(webengine_dir, "storage")
+            os.makedirs(cache_dir, exist_ok=True)
+            os.makedirs(storage_dir, exist_ok=True)
+            self.web_profile.setCachePath(cache_dir)
+            self.web_profile.setPersistentStoragePath(storage_dir)
+            self._log_web_ui(f"WebEngine profile paths cache={cache_dir} storage={storage_dir}")
+        except Exception as exc:
+            self._log_web_ui(f"WebEngine profile path setup failed error={exc}")
+        self.page = DiagnosticPage(self, self.web_profile)
         self.view.setPage(self.page)
         web_settings = self.view.settings()
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
         self.view.page().setBackgroundColor(WINDOW_BACKING_COLOR)
 
         central = QWidget(self)
@@ -519,14 +593,23 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.view)
+        self._central_layout = layout
         self.setCentralWidget(central)
 
         self.bridge = Bridge(self)
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
+        self.view.loadStarted.connect(self._on_load_started)
+        self.view.loadProgress.connect(self._on_load_progress)
         self.view.page().loadFinished.connect(self._on_load_finished)
-        self.view.load(_react_index_url())
+        try:
+            self.view.page().renderProcessTerminated.connect(self._on_render_process_terminated)
+        except Exception:
+            self._log_web_ui("renderProcessTerminated signal unavailable")
+        self._log_web_ui(f"Loading React URL {self._react_index_url.toString()}")
+        self.view.load(self._react_index_url)
+        QTimer.singleShot(9000, self._diagnose_web_ui_startup_timeout)
 
         self.tray = TrayIcon(self)
         self.tray.show()
@@ -568,55 +651,181 @@ class MainWindow(QMainWindow):
         if app:
             app.processEvents()
 
+    def _log_react_index_candidates(self):
+        for candidate in _react_index_candidates():
+            try:
+                exists = os.path.exists(candidate)
+                size = os.path.getsize(candidate) if exists else 0
+                self._log_web_ui(f"React candidate exists={exists} size={size} path={candidate}")
+            except Exception as exc:
+                self._log_web_ui(f"React candidate check failed path={candidate} error={exc}")
+
+    def _on_load_started(self):
+        self._web_load_started = True
+        self._web_load_progress = 0
+        self._log_web_ui(f"loadStarted url={self.view.url().toString()}")
+
+    def _on_load_progress(self, progress: int):
+        previous = self._web_load_progress
+        self._web_load_progress = int(progress)
+        if progress in {0, 25, 50, 75, 100} or previous < 0 or progress - previous >= 20:
+            self._log_web_ui(f"loadProgress {progress} url={self.view.url().toString()}")
+
     def _on_load_finished(self, ok: bool):
+        self._web_load_finished = True
+        self._web_load_ok = bool(ok)
+        if self._showing_web_ui_error:
+            self._log_web_ui(f"diagnostic fallback loadFinished ok={ok}")
+            return
         if not ok:
             self._show_web_ui_error("Whisperer UI did not load.", self.view.url().toString())
             return
         self._log_web_ui(f"Loaded {self.view.url().toString()}")
+        self.view.page().runJavaScript(_WEB_DIAGNOSTIC_SHIM)
         self.view.page().runJavaScript(_BRIDGE_SHIM)
         QTimer.singleShot(120, self._emit_snapshot)
         QTimer.singleShot(1200, self._verify_web_ui_mounted)
 
     def _verify_web_ui_mounted(self):
+        self._web_probe_pending = True
         self.view.page().runJavaScript(
-            "(() => document.getElementById('root')?.innerText?.trim().slice(0, 80) || '')()",
+            """
+            (() => JSON.stringify({
+              readyState: document.readyState,
+              href: location.href,
+              title: document.title || "",
+              bodyText: (document.body && document.body.innerText || "").trim().slice(0, 160),
+              rootText: (document.getElementById("root") && document.getElementById("root").innerText || "").trim().slice(0, 160),
+              rootChildren: document.getElementById("root") ? document.getElementById("root").children.length : -1,
+              scripts: Array.from(document.scripts).map(function(s) { return s.src || "inline"; }).slice(0, 10)
+            }))()
+            """,
             self._handle_web_ui_probe,
         )
 
-    def _handle_web_ui_probe(self, text: str):
+    def _handle_web_ui_probe(self, result: str):
+        self._web_probe_pending = False
+        try:
+            payload = json.loads(result or "{}")
+        except Exception:
+            payload = {"raw": result}
+        text = str(payload.get("rootText") or payload.get("bodyText") or "")
+        self._log_web_ui(f"React mount probe payload={json.dumps(payload, ensure_ascii=False, default=str)}")
         if text:
-            self._log_web_ui(f"React mounted: {text!r}")
+            self._react_mounted = True
+            self._log_web_ui(f"React mounted: {text[:80]!r}")
             return
+        detail = (
+            f"url={self.view.url().toString()}\n"
+            f"logDir={log_dir()}\n"
+            f"probe={json.dumps(payload, ensure_ascii=False, default=str, indent=2)}"
+        )
         self._log_web_ui("React mount probe returned no visible text")
-        self._show_web_ui_error("Whisperer UI opened, but the page stayed blank.", self.view.url().toString())
+        self._show_web_ui_error("Whisperer UI opened, but the page stayed blank.", detail)
+
+    def _diagnose_web_ui_startup_timeout(self):
+        if self._react_mounted or self._showing_web_ui_error:
+            return
+        self._web_timeout_reported = True
+        detail = (
+            f"url={self.view.url().toString()}\n"
+            f"target={self._react_index_url.toString()}\n"
+            f"loadStarted={self._web_load_started}\n"
+            f"loadFinished={self._web_load_finished}\n"
+            f"loadOk={self._web_load_ok}\n"
+            f"progress={self._web_load_progress}\n"
+            f"logDir={log_dir()}"
+        )
+        self._log_web_ui("Web UI startup timeout\n" + detail)
+        if self._web_load_finished:
+            self._verify_web_ui_mounted()
+            return
+        self._show_web_ui_error("Whisperer UI is taking too long to load.", detail)
+
+    def _on_render_process_terminated(self, status, exit_code: int):
+        detail = (
+            f"status={getattr(status, 'name', status)} exitCode={exit_code}\n"
+            f"url={self.view.url().toString()}\n"
+            f"logDir={log_dir()}"
+        )
+        self._log_web_ui("WebEngine render process terminated " + detail.replace("\n", " "))
+        self._show_web_ui_error("Whisperer UI renderer stopped.", detail)
 
     def _show_web_ui_error(self, title: str, detail: str):
-        escaped_title = json.dumps(title)
-        escaped_detail = json.dumps(detail)
-        self.view.setHtml(
-            f"""
-            <!doctype html>
-            <meta charset="utf-8">
-            <body style="margin:0;background:#f8f7f3;color:#24231f;font:14px Segoe UI,system-ui,sans-serif;">
-              <div style="padding:28px;max-width:720px;">
-                <h1 style="font-size:20px;margin:0 0 12px;">{title}</h1>
-                <p style="line-height:1.5;margin:0 0 12px;">Open the log below for the WebEngine details.</p>
-                <pre style="white-space:pre-wrap;background:#fff;border:1px solid #ddd7ce;padding:12px;">{detail}</pre>
-              </div>
-            </body>
-            <script>document.querySelector("h1").textContent = {escaped_title}; document.querySelector("pre").textContent = {escaped_detail};</script>
-            """,
-            QUrl("about:blank"),
-        )
-
-    def _log_web_ui(self, message: str):
+        if self._showing_web_ui_error:
+            self._log_web_ui(f"Diagnostic fallback already visible; additional title={title!r}")
+            return
+        self._showing_web_ui_error = True
+        self._log_web_ui(f"Showing diagnostic fallback title={title!r} detail={detail!r}")
         try:
-            log_root = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Whisperer", "logs")
-            os.makedirs(log_root, exist_ok=True)
-            with open(os.path.join(log_root, "web-ui.log"), "a", encoding="utf-8") as log_file:
-                log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+            self.view.hide()
         except Exception:
             pass
+        panel = QWidget(self)
+        panel.setObjectName("whisperer-diagnostic-panel")
+        self._apply_widget_backing(panel)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(28, 28, 28, 28)
+        panel_layout.setSpacing(12)
+
+        title_label = QLabel(title, panel)
+        title_label.setStyleSheet("font-size:20px;font-weight:600;color:#24231f;background:transparent;")
+        title_label.setWordWrap(True)
+        panel_layout.addWidget(title_label)
+
+        help_label = QLabel("Send this log folder for diagnostics:", panel)
+        help_label.setStyleSheet("font-size:14px;color:#4b4943;background:transparent;")
+        help_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        panel_layout.addWidget(help_label)
+
+        details = QPlainTextEdit(panel)
+        details.setReadOnly(True)
+        details.setPlainText(f"{detail}\n\nLog folder:\n{log_dir()}")
+        details.setStyleSheet(
+            "QPlainTextEdit { background:#ffffff; color:#24231f; border:1px solid #ddd7ce; "
+            "border-radius:8px; padding:10px; font:12px Consolas, monospace; }"
+        )
+        panel_layout.addWidget(details, 1)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+
+        open_logs = QPushButton("Open log folder", panel)
+        open_logs.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_logs.clicked.connect(self._open_log_folder)
+        actions.addWidget(open_logs)
+
+        copy_details = QPushButton("Copy diagnostics", panel)
+        copy_details.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_details.clicked.connect(lambda: self._copy_diagnostics_to_clipboard(details.toPlainText()))
+        actions.addWidget(copy_details)
+        actions.addStretch(1)
+        panel_layout.addLayout(actions)
+
+        self._diagnostic_panel = panel
+        self._central_layout.addWidget(panel)
+
+    def _open_log_folder(self):
+        folder = log_dir()
+        self._log_web_ui(f"Opening diagnostic log folder {folder}")
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        except Exception:
+            UI_LOG.exception("Could not open log folder")
+
+    def _copy_diagnostics_to_clipboard(self, detail: str):
+        try:
+            QApplication.clipboard().setText(detail)
+            self._log_web_ui("Copied diagnostic details to clipboard")
+        except Exception:
+            UI_LOG.exception("Could not copy diagnostic details")
+
+    def _log_web_ui(self, message: str):
+        if len(message) > 4000:
+            message = message[:4000] + "...<truncated>"
+        message = scrub_text(message)
+        append_log_line("web-ui.log", message)
+        UI_LOG.info("web-ui: %s", message)
 
     def _should_auto_start_engine(self) -> bool:
         startup = self.settings.get("startup", {})
@@ -825,7 +1034,7 @@ class MainWindow(QMainWindow):
                 "error": f"Could not install update: {exc}",
             }
         if payload.get("ok") and payload.get("shouldCloseApp"):
-            QTimer.singleShot(800, self.close)
+            QTimer.singleShot(800, self.force_quit)
         return json.dumps(payload, separators=(",", ":"))
 
     def snapshot_json(self) -> str:
@@ -1414,8 +1623,15 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         options = [
             ("NVIDIA API Parakeet", NVIDIA_API_GPU_VALUE),
             ("Groq API (Whisper)", GROQ_API_GPU_VALUE),
-            ("Auto (primary CUDA GPU)", GPU_AUTO_VALUE),
         ]
+        if getattr(sys, "frozen", False) and not self._external_engine_python():
+            append_log_line(
+                "engine-launch.log",
+                "local engine options hidden reason='No external Python runtime found'",
+            )
+            return options
+
+        options.append(("Auto (local CUDA GPU)", GPU_AUTO_VALUE))
         try:
             creationflags = 0x08000000 if os.name == "nt" else 0
             result = subprocess.run(
@@ -1444,6 +1660,99 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         except Exception:
             pass
         return options
+
+    def _local_engine_required_modules(self, model_name: str | None = None) -> list[str]:
+        model = (model_name or self._current_model_value() or "").lower()
+        required = ["numpy", "sounddevice", "keyboard"]
+        if model.startswith("nvidia/parakeet"):
+            required.extend(["torch", "nemo.collections.asr"])
+        else:
+            required.append("faster_whisper")
+        return required
+
+    def _local_engine_status(self, model_name: str | None = None) -> dict[str, Any]:
+        model = model_name or self._current_model_value()
+        if not getattr(sys, "frozen", False):
+            return {
+                "available": True,
+                "mode": "source",
+                "python": sys.executable,
+                "model": model,
+                "missing": [],
+                "message": "Source checkout can use the active Python environment.",
+            }
+
+        python_exe = self._external_engine_python()
+        if not python_exe:
+            return {
+                "available": False,
+                "mode": "frozen",
+                "python": "",
+                "model": model,
+                "missing": ["python"],
+                "message": "Local GPU transcription requires a separate Python runtime with the local model dependencies installed.",
+            }
+
+        cache_key = (python_exe, model)
+        cached = self._local_engine_status_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and now - cached[0] < 60:
+            return dict(cached[1])
+
+        required = self._local_engine_required_modules(model)
+        probe = r'''
+import importlib.util
+import json
+import sys
+
+required = sys.argv[1:]
+missing = []
+for name in required:
+    try:
+        if importlib.util.find_spec(name) is None:
+            missing.append(name)
+    except Exception:
+        missing.append(name)
+print(json.dumps({"missing": missing}, separators=(",", ":")))
+'''
+        try:
+            result = subprocess.run(
+                [python_exe, "-c", probe, *required],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+                creationflags=0x08000000 if os.name == "nt" else 0,
+            )
+            payload = json.loads((result.stdout or "{}").strip().splitlines()[-1] or "{}")
+            missing = [str(item) for item in payload.get("missing", [])]
+            available = result.returncode == 0 and not missing
+            message = (
+                "Local engine runtime is available."
+                if available
+                else "Local GPU transcription requires these Python packages: " + ", ".join(missing)
+            )
+        except Exception as exc:
+            missing = ["runtime_probe"]
+            available = False
+            message = f"Could not verify the local engine runtime: {exc}"
+
+        status = {
+            "available": available,
+            "mode": "frozen",
+            "python": python_exe,
+            "model": model,
+            "required": required,
+            "missing": missing,
+            "message": message,
+        }
+        self._local_engine_status_cache[cache_key] = (now, status)
+        return dict(status)
+
+    def local_engine_status_json(self, model_name: str = "") -> str:
+        return json.dumps(self._local_engine_status(model_name or self._current_model_value()), separators=(",", ":"))
 
     def _apply_engine_gpu_env(self, env: dict[str, str]):
         gpu_value = self._current_gpu_value()
@@ -1931,7 +2240,24 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
             gpu_value = self._current_gpu_value()
             source_root = self._frozen_engine_source_root()
             python_exe = self._external_engine_python()
-            if gpu_value not in API_GPU_VALUES and source_root and python_exe:
+            if gpu_value not in API_GPU_VALUES:
+                local_status = self._local_engine_status(model_arg)
+                if not source_root or not python_exe or not local_status.get("available"):
+                    message = str(
+                        local_status.get("message")
+                        or "Local GPU transcription is not available in this installation."
+                    )
+                    append_log_line(
+                        "engine-launch.log",
+                        f"local engine blocked model={model_arg!r} gpu={gpu_value!r} "
+                        f"sourceRoot={source_root!r} python={python_exe!r} status={local_status!r}",
+                    )
+                    self._engine_output_lines.append(message)
+                    self._loading_preview_enabled = False
+                    self._hide_loading_preview()
+                    self._unregister_loading_preview_shortcuts()
+                    self._set_engine_state("stopped")
+                    return
                 command = [python_exe, "-u", os.path.join(source_root, "main.py"), f"--model={model_arg}"]
                 cwd = source_root
                 env = os.environ.copy()
@@ -1947,10 +2273,11 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
             env = os.environ.copy()
 
         env["WHISPERER_UI_LOADING_PREVIEW"] = "1"
+        env["WHISPERER_LOG_DIR"] = log_dir()
         _apply_quiet_model_env(env)
         self._apply_engine_gpu_env(env)
         try:
-            log_root = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Whisperer", "logs")
+            log_root = log_dir()
             os.makedirs(log_root, exist_ok=True)
             self._engine_ready_file = os.path.join(log_root, f"engine-ready-{time.time_ns()}.json")
             if os.path.exists(self._engine_ready_file):
@@ -1959,6 +2286,13 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         except Exception:
             self._engine_ready_file = ""
 
+        append_log_line(
+            "engine-launch.log",
+            "starting engine "
+            f"command={command!r} cwd={cwd!r} frozen={bool(getattr(sys, 'frozen', False))} "
+            f"model={model_arg!r} gpu={self._current_gpu_value()!r} provider={env.get('WHISPERER_STT_PROVIDER', '')!r} "
+            f"readyFile={self._engine_ready_file!r}",
+        )
         try:
             self.process = subprocess.Popen(
                 command,
@@ -1974,7 +2308,9 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
                 bufsize=1,
                 close_fds=True,
             )
+            append_log_line("engine-launch.log", f"engine process started pid={self.process.pid}")
         except Exception as exc:
+            append_log_line("engine-launch.log", f"failed to start engine error={exc!r}")
             self._engine_output_lines.append(f"Failed to start engine: {exc}")
             self._loading_preview_enabled = False
             self._hide_loading_preview()
@@ -2192,8 +2528,11 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
             try:
                 assert self.process and self.process.stdout
                 for line in self.process.stdout:
-                    self._engine_output_queue.put(line.rstrip())
+                    line = line.rstrip()
+                    append_log_line("engine-stdout.log", line)
+                    self._engine_output_queue.put(line)
             except Exception as exc:
+                append_log_line("engine-stdout.log", f"ENGINE_OUTPUT_ERROR {exc}")
                 self._engine_output_queue.put(f"ENGINE_OUTPUT_ERROR {exc}")
 
         threading.Thread(target=_reader, daemon=True).start()
@@ -2260,6 +2599,7 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
 
         if self.process and self.process.poll() is not None:
             return_code = self.process.returncode
+            append_log_line("engine-launch.log", f"engine process exited returnCode={return_code}")
             self.process = None
             self._set_engine_state("stopped")
             if self._backup_transcription_busy and self._backup_transcription_source == "engine":

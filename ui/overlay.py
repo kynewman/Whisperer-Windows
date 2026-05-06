@@ -1368,25 +1368,19 @@ class WaveformOverlay(QWidget):
         path = QPainterPath()
         path.addRoundedRect(capsule, radius, radius)
 
-        if self._blur_cache_pixmap and not self._blur_cache_pixmap.isNull() and not self._dragging:
-            painter.save()
-            painter.setClipPath(path)
-            painter.drawPixmap(0, 0, self._blur_cache_pixmap)
-            painter.restore()
-
         if self._state == "error":
-            fill = QColor(60, 20, 20, 128)
+            fill = QColor(60, 20, 20, 178)
         elif self._state == "cancelled":
-            fill = QColor(28, 28, 31, 128)
+            fill = QColor(28, 28, 31, 184)
         else:
-            fill = QColor(28, 29, 32, 128)
+            fill = QColor(24, 25, 28, 188)
             if self._lock_glow > 0.01:
                 glow = self._lock_glow
                 fill = QColor(
-                    int(28 + 18 * glow),
-                    int(29 + 18 * glow),
-                    int(32 + 22 * glow),
-                    int(128 + 22 * glow),
+                    int(24 + 8 * glow),
+                    int(25 + 8 * glow),
+                    int(28 + 10 * glow),
+                    int(188 + 10 * glow),
                 )
 
         painter.fillPath(path, fill)
@@ -1406,9 +1400,9 @@ class WaveformOverlay(QWidget):
             border.setColorAt(1.0, QColor(255, 40, 40, 15))
         else:
             lock = self._lock_glow
-            border.setColorAt(0.0, QColor(255, 255, 255, int(42 + 42 * lock)))
-            border.setColorAt(0.45, QColor(220, 234, 255, int(20 + 58 * lock)))
-            border.setColorAt(1.0, QColor(120, 168, 255, int(10 + 42 * lock)))
+            border.setColorAt(0.0, QColor(255, 255, 255, int(24 + 20 * lock)))
+            border.setColorAt(0.45, QColor(220, 234, 255, int(12 + 28 * lock)))
+            border.setColorAt(1.0, QColor(120, 168, 255, int(8 + 22 * lock)))
         painter.setPen(QPen(QBrush(border), 1.05 + 0.48 * self._lock_glow))
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawPath(path)

@@ -17,6 +17,7 @@ export default function HomePage({
   dictationKeys,
   dictationBackup,
   onTranscribeLastDictation,
+  apiKeys,
 }: {
   engineState: EngineState;
   setEngineState: (s: EngineState) => void;
@@ -31,6 +32,7 @@ export default function HomePage({
   dictationKeys: string[];
   dictationBackup: DictationBackup;
   onTranscribeLastDictation: () => void;
+  apiKeys: Record<string, { saved?: boolean; masked?: string }>;
 }) {
   const statusText =
     engineState === "running" ? "Engine ready" :
@@ -43,9 +45,30 @@ export default function HomePage({
     { title: "Vocabulary", detail: "Manage learned words and replacement rules.", keys: null, page: "vocabulary", iconName: "vocab" },
     { title: "History", detail: "Review real dictations saved by Whisperer.", keys: null, page: "history", iconName: "history" },
   ];
+  const missingNvidiaKey = gpu === "nvidia_api" && !apiKeys.nvidia?.saved;
+  const missingGroqKey = (gpu === "groq_api" || gpu === "grok_api") && !apiKeys.groq?.saved;
+  const missingApiKey = missingNvidiaKey || missingGroqKey;
 
   return (
     <div className="page-enter scroll page-shell">
+      {missingApiKey && (
+        <Card padding={0} style={{ marginBottom: 18, borderColor: "rgba(190, 105, 46, 0.35)" }}>
+          <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <span style={{ width: 30, height: 30, display: "grid", placeItems: "center", background: "var(--bg-sunken)", border: "1px solid var(--line-soft)", borderRadius: 8, color: "var(--rec)" }}>
+              <Icon name="config" size={15} />
+            </span>
+            <div style={{ flex: 1, minWidth: 260 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>
+                {missingNvidiaKey ? "Add an NVIDIA API key to use the default transcription device." : "Add a Groq API key to use this transcription device."}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>
+                The app can open without downloading local models, but dictation needs the selected API key before it can transcribe.
+              </div>
+            </div>
+            <Btn variant="primary" icon="config" onClick={() => onNav("configuration")}>Open settings</Btn>
+          </div>
+        </Card>
+      )}
       <Card padding={0} style={{ marginBottom: 18 }}>
         <div style={{ padding: "20px 22px 16px", borderBottom: "1px solid var(--line-soft)" }}>
           <Eyebrow>Engine</Eyebrow>

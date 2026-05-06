@@ -4,12 +4,32 @@ import subprocess
 import sys
 import traceback
 
+from core.diagnostics import (
+    append_log_line,
+    configure_process_logging,
+    enable_fault_logging,
+    install_excepthook,
+    install_qt_message_handler,
+    log_path,
+    log_process_snapshot,
+)
+
+
+_PROCESS_LOG_NAME = (
+    "engine"
+    if "--engine" in sys.argv
+    else "file-transcriber"
+    if any(arg.startswith("--file=") for arg in sys.argv[1:])
+    else "launcher"
+)
+_LOG = configure_process_logging(_PROCESS_LOG_NAME)
+enable_fault_logging(_PROCESS_LOG_NAME)
+log_process_snapshot(_LOG, "launcher-entry")
+
 
 def _write_startup_crash_log(text: str) -> str:
     try:
-        root = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Whisperer", "logs")
-        os.makedirs(root, exist_ok=True)
-        path = os.path.join(root, "launcher-crash.log")
+        path = log_path("launcher-crash.log")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         return path
@@ -36,12 +56,13 @@ def _show_startup_crash_message(path: str) -> None:
 
 def _handle_startup_exception(exc_type, exc, tb) -> None:
     text = "".join(traceback.format_exception(exc_type, exc, tb))
+    _LOG.error("unhandled startup exception\n%s", text)
     path = _write_startup_crash_log(text)
     _show_startup_crash_message(path)
 
 
 if "--engine" not in sys.argv and not any(arg.startswith("--file=") for arg in sys.argv[1:]):
-    sys.excepthook = _handle_startup_exception
+    install_excepthook(_LOG, lambda text: _show_startup_crash_message(_write_startup_crash_log(text)))
 
 
 def _prefer_external_python_packages_for_installed_source() -> None:
@@ -115,6 +136,7 @@ def _handoff_frozen_ui_to_python() -> bool:
         env=env,
         creationflags=create_no_window if os.name == "nt" else 0,
     )
+    _LOG.info("handed off frozen UI to python=%s launcher=%s cwd=%s", python_exe, launcher_path, source_root)
     return True
 
 
@@ -150,13 +172,26 @@ if getattr(sys, "frozen", False):
         os.environ["QTWEBENGINE_RESOURCES_PATH"] = webengine_resources
     if os.path.isdir(webengine_locales):
         os.environ["QTWEBENGINE_LOCALES_PATH"] = webengine_locales
+    _LOG.info(
+        "frozen paths configured meipass=%s qt_root=%s qt_plugin_path=%s webengine_process=%s exists=%s",
+        getattr(sys, "_MEIPASS", ""),
+        qt_root,
+        os.environ.get("QT_PLUGIN_PATH", ""),
+        webengine_process,
+        os.path.exists(webengine_process),
+    )
 
 if "--engine" in sys.argv:
     import importlib
 
     args = [arg for arg in sys.argv[1:] if arg != "--engine"]
     sys.argv = [sys.argv[0], *args]
-    importlib.import_module("main").WhisperApp().run()
+    _LOG.info("entering bundled engine mode argv=%r", sys.argv)
+    try:
+        importlib.import_module("main").WhisperApp().run()
+    except Exception:
+        _LOG.exception("bundled engine mode failed")
+        raise
 
 def _frozen_engine_source_root() -> str | None:
     candidates = [
@@ -178,6 +213,7 @@ def _external_engine_python() -> str | None:
 if any(arg.startswith("--file=") for arg in sys.argv[1:]):
 
     file_arg = next(arg.split("=", 1)[1] for arg in sys.argv[1:] if arg.startswith("--file="))
+    _LOG.info("file transcription requested file=%s frozen=%s", file_arg, bool(getattr(sys, "frozen", False)))
     try:
         if getattr(sys, "frozen", False):
             source_root = _frozen_engine_source_root()
@@ -198,7 +234,11 @@ if any(arg.startswith("--file=") for arg in sys.argv[1:]):
             result = transcribe_file(file_arg)
             print(result["final_text"], flush=True)
     except Exception:
-        traceback.print_exc()
+        text = traceback.format_exc()
+        _LOG.error("file transcription failed\n%s", text)
+        path = _write_startup_crash_log(text)
+        _show_startup_crash_message(path)
+        print(text, flush=True)
         sys.exit(1)
     sys.exit(0)
 
@@ -206,30 +246,48 @@ if any(arg.startswith("--file=") for arg in sys.argv[1:]):
 # paths. Keep that specific guard, but avoid the heavy all-software compositor
 # path unless explicitly requested because it makes scrolling and page changes
 # feel sluggish.
-_disabled_webengine_features = ["DCompPresenter"]
-_webengine_flags = "--disable-direct-composition"
-_safe_webengine = (
-    os.environ.get("WHISPERER_SAFE_WEBENGINE") == "1"
-    or (getattr(sys, "frozen", False) and os.environ.get("WHISPERER_FAST_WEBENGINE") != "1")
-)
-if _safe_webengine:
-    os.environ.setdefault("QT_OPENGL", "software")
-    os.environ.setdefault("QT_QUICK_BACKEND", "software")
-    os.environ.setdefault("QSG_RHI_BACKEND", "software")
-    os.environ.setdefault("QSG_RENDER_LOOP", "basic")
-    _disabled_webengine_features.extend(["UseSkiaRenderer", "VizDisplayCompositor"])
-    _webengine_flags += (
-        " --disable-gpu"
-        " --disable-gpu-compositing"
+_raw_webengine = os.environ.get("WHISPERER_RAW_WEBENGINE") == "1"
+_safe_webengine = False
+_chromium_log = ""
+if not _raw_webengine:
+    _disabled_webengine_features = ["DCompPresenter"]
+    _webengine_flags = "--disable-direct-composition"
+    _safe_webengine = (
+        os.environ.get("WHISPERER_SAFE_WEBENGINE") == "1"
+        or (getattr(sys, "frozen", False) and os.environ.get("WHISPERER_FAST_WEBENGINE") != "1")
     )
-_webengine_flags += f" --disable-features={','.join(_disabled_webengine_features)}"
-if os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS"):
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{os.environ['QTWEBENGINE_CHROMIUM_FLAGS']} {_webengine_flags}"
-else:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _webengine_flags
+    if _safe_webengine:
+        os.environ.setdefault("QT_OPENGL", "software")
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
+        os.environ.setdefault("QSG_RENDER_LOOP", "basic")
+        if getattr(sys, "frozen", False):
+            os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        _disabled_webengine_features.extend(["UseSkiaRenderer", "VizDisplayCompositor"])
+        _webengine_flags += (
+            " --disable-gpu"
+            " --disable-gpu-compositing"
+        )
+    _webengine_flags += f" --disable-features={','.join(_disabled_webengine_features)}"
+    if os.environ.get("WHISPERER_VERBOSE_CHROMIUM_LOGS") == "1":
+        _chromium_log = log_path("chromium.log").replace("\\", "/")
+        _webengine_flags += f' --enable-logging --log-level=0 --log-file="{_chromium_log}"'
+    if os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS"):
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{os.environ['QTWEBENGINE_CHROMIUM_FLAGS']} {_webengine_flags}"
+    else:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _webengine_flags
+_LOG.info(
+    "webengine env safe=%s raw=%s qt_opengl=%s chromium_flags=%s chromium_log=%s",
+    _safe_webengine,
+    _raw_webengine,
+    os.environ.get("QT_OPENGL", ""),
+    os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""),
+    _chromium_log,
+)
 
 from PyQt6.QtCore import Qt, QCoreApplication
 QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+if os.environ.get("WHISPERER_DISABLE_QT_LOG_HANDLER") != "1":
+    install_qt_message_handler()
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 import PyQt6.QtWebEngineWidgets  # noqa: F401  must precede QApplication for Qt WebEngine
@@ -293,7 +351,9 @@ def _show_existing_ui_window() -> bool:
 
 if __name__ == "__main__":
     try:
+        _LOG.info("launcher main entered")
         if not acquire_single_instance("WhispererWindowsUI"):
+            _LOG.info("single instance already running; attempting to show existing UI")
             _show_existing_ui_window()
             sys.exit(0)
         if os.name == "nt":
@@ -304,18 +364,23 @@ if __name__ == "__main__":
             except Exception:
                 pass
         app = QApplication(sys.argv)
+        _LOG.info("QApplication created")
+        append_log_line("web-ui.log", f"launcher created QApplication pid={os.getpid()} frozen={bool(getattr(sys, 'frozen', False))}")
         icon = QIcon(app_icon_path())
         app.setWindowIcon(icon)
         app.setQuitOnLastWindowClosed(False)
         app.setFont(san_francisco(10))
         app.setStyleSheet(f"* {{ font-family: '{san_francisco_family()}'; }}")
         window = MainWindow()
+        _LOG.info("MainWindow created")
         window.setWindowIcon(icon)
         window.show()
+        _LOG.info("MainWindow shown; entering app event loop")
         sys.exit(app.exec())
     except Exception:
         text = traceback.format_exc()
         print(text, flush=True)
+        _LOG.error("launcher main failed\n%s", text)
         path = _write_startup_crash_log(text)
         _show_startup_crash_message(path)
         sys.exit(1)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,8 @@ GITHUB_OWNER = "kynewman"
 GITHUB_REPO = "Whisperer-Windows"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+INSTALLER_NAME_RE = re.compile(r"^Whisperer-Setup-(\d+\.\d+\.\d+(?:\.\d+)?)\.exe$", re.IGNORECASE)
+ALLOW_UNSIGNED_UPDATE_ENV = "WHISPERER_ALLOW_UNSIGNED_UPDATE_INSTALLER"
 
 
 @dataclass
@@ -91,7 +94,8 @@ def _select_windows_installer(assets: list[dict[str, Any]]) -> ReleaseAsset | No
         if not name or not download_url:
             continue
         lower = name.lower()
-        if not lower.endswith(".exe"):
+        match = INSTALLER_NAME_RE.match(name)
+        if not match:
             continue
         score = 0
         if "setup" in lower or "installer" in lower:
@@ -107,6 +111,51 @@ def _select_windows_installer(assets: list[dict[str, Any]]) -> ReleaseAsset | No
     return sorted(candidates, key=lambda item: getattr(item, "_score", 0), reverse=True)[0]
 
 
+def _installer_version(name: str) -> str:
+    match = INSTALLER_NAME_RE.match(name)
+    return match.group(1) if match else ""
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _authenticode_status(path: str) -> str:
+    if os.name != "nt":
+        return "Unavailable"
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "$sig = Get-AuthenticodeSignature -LiteralPath $args[0]; "
+                "Write-Output $sig.Status",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            creationflags=0x08000000,
+        )
+        status = (completed.stdout or "").strip().splitlines()
+        return status[-1].strip() if status else "Unknown"
+    except Exception:
+        return "Unknown"
+
+
 def check_for_update() -> UpdateCheck:
     current = config.VERSION
     try:
@@ -118,6 +167,11 @@ def check_for_update() -> UpdateCheck:
 
     latest = str(release.get("tag_name") or release.get("name") or "")
     asset = _select_windows_installer(release.get("assets") if isinstance(release.get("assets"), list) else [])
+    if asset:
+        latest_numbers = ".".join(str(part) for part in _version_tuple(latest)[:3])
+        asset_numbers = ".".join(str(part) for part in _version_tuple(_installer_version(asset.name))[:3])
+        if latest_numbers and asset_numbers and latest_numbers != asset_numbers:
+            asset = None
     return UpdateCheck(
         ok=True,
         current_version=current,
@@ -163,8 +217,26 @@ def download_and_launch_update() -> dict[str, Any]:
         payload["error"] = f"Could not download the update: {exc}"
         return payload
 
+    downloaded_hash = _sha256(target)
+    signature_status = _authenticode_status(target)
+    if signature_status != "Valid" and os.environ.get(ALLOW_UNSIGNED_UPDATE_ENV) != "1":
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        payload = check.to_dict()
+        payload["ok"] = False
+        payload["sha256"] = downloaded_hash
+        payload["signatureStatus"] = signature_status
+        payload["error"] = (
+            "The downloaded installer is not signed by a trusted publisher. "
+            "Open the GitHub release manually, or install a signed release."
+        )
+        return payload
+
     try:
-        subprocess.Popen([target], cwd=os.path.dirname(target), close_fds=True)
+        setup_log = os.path.join(tempfile.gettempdir(), "WhispererUpdates", "installer-update.log")
+        subprocess.Popen([target, f"/LOG={setup_log}"], cwd=os.path.dirname(target), close_fds=True)
     except Exception as exc:
         payload = check.to_dict()
         payload["ok"] = False
@@ -174,6 +246,8 @@ def download_and_launch_update() -> dict[str, Any]:
     payload = check.to_dict()
     payload["ok"] = True
     payload["installerPath"] = target
+    payload["sha256"] = downloaded_hash
+    payload["signatureStatus"] = signature_status
     payload["shouldCloseApp"] = True
     payload["pythonExecutable"] = sys.executable
     return payload

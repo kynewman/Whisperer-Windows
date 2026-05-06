@@ -60,6 +60,14 @@ _prefer_external_python_packages_for_installed_source()
 
 _PROCESS_START = time.perf_counter()
 
+from core.diagnostics import configure_process_logging, enable_fault_logging, install_excepthook, log_process_snapshot
+
+_PROCESS_LOG_NAME = "file-transcriber" if any(arg.startswith("--file=") for arg in sys.argv[1:]) else "engine"
+_LOG = configure_process_logging(_PROCESS_LOG_NAME)
+enable_fault_logging(_PROCESS_LOG_NAME)
+install_excepthook(_LOG)
+log_process_snapshot(_LOG, "engine-import")
+
 import config
 
 _EARLY_MODEL_NAME = next(
@@ -214,9 +222,12 @@ class WhisperApp:
     """
 
     def __init__(self):
+        _LOG.info("WhisperApp init begin")
         if not acquire_single_instance("WhispererWindowsEngine"):
+            _LOG.info("engine single-instance lock already held; exiting")
             raise SystemExit(0)
         self.app = QApplication(sys.argv)
+        _LOG.info("engine QApplication created")
         self.overlay = WaveformOverlay()
         self.signals = Signals()
         self._context_words = ""
@@ -1627,18 +1638,22 @@ class WhisperApp:
         record_timing("engine_import_phase", (time.perf_counter() - _PROCESS_START) * 1000.0)
         cloud_stt_provider = os.environ.get("WHISPERER_STT_PROVIDER")
         model_name = config.WHISPER_MODEL_SIZE
+        _LOG.info("engine background load start model=%s provider=%s", model_name, cloud_stt_provider or "local")
 
         try:
             ready_name = model_name
             if cloud_stt_provider:
                 ready_name = cloud_stt_provider
+                _LOG.info("using cloud STT provider=%s", cloud_stt_provider)
                 print(f"Using cloud STT provider: {cloud_stt_provider}.", flush=True)
             else:
                 engine_name = "NVIDIA Parakeet" if model_name.lower().startswith("nvidia/parakeet") else "Whisper"
+                _LOG.info("loading local model engine=%s model=%s", engine_name, model_name)
                 print(f"Loading {engine_name} model onto GPU...", flush=True)
                 with timed("engine_startup_model_phase"):
                     load_model()
                     warmup_model()
+                _LOG.info("local model loaded model=%s", model_name)
                 print(f"Model loaded. Whisper Project is running with {model_name}.", flush=True)
 
             try:
@@ -1646,11 +1661,13 @@ class WhisperApp:
                 with timed("recorder_prepare"):
                     self.recorder.prepare()
             except Exception as exc:
+                _LOG.warning("mic warmup skipped: %s", exc)
                 print(f"Mic warmup skipped: {exc}", flush=True)
 
             self._model_ready.set()
             self.signals.set_model_loading.emit(False)
             _write_engine_ready_file(ready_name)
+            _LOG.info("engine ready model=%s elapsed_ms=%.1f", ready_name, (time.perf_counter() - _PROCESS_START) * 1000.0)
             print("ENGINE_READY", flush=True)
             self._start_stdin_command_reader()
             self._ensure_live_recognizer()
@@ -1671,6 +1688,7 @@ class WhisperApp:
         except Exception as exc:
             self._model_failed = str(exc)
             self.signals.set_model_loading.emit(False)
+            _LOG.exception("engine background load failed")
             traceback.print_exc()
             os._exit(1)
 
@@ -1923,8 +1941,10 @@ class WhisperApp:
                 pass
 
     def run(self):
+        _LOG.info("engine run entered")
         self._register_shortcuts()
         threading.Thread(target=self._load_engine_background, daemon=True).start()
+        _LOG.info("engine event loop starting")
         sys.exit(self.app.exec())
 
 
@@ -1939,12 +1959,16 @@ if __name__ == "__main__":
             model_arg = arg.split("=", 1)[1]
     if model_arg:
         config.WHISPER_MODEL_SIZE = model_arg
+        _LOG.info("model arg applied model=%s", model_arg)
     if file_arg:
+        _LOG.info("file transcription begin file=%s", file_arg)
         print(f"Transcribing file: {file_arg}", flush=True)
         try:
             result = transcribe_file(file_arg)
+            _LOG.info("file transcription completed file=%s chars=%s", file_arg, len(result.get("final_text", "")))
             print(result["final_text"], flush=True)
         except Exception as exc:
+            _LOG.exception("file transcription failed")
             print(f"Error: {exc}", flush=True)
             sys.exit(1)
     else:

@@ -1,60 +1,107 @@
-"""Release smoke checks for the installed Whisperer UI/engine split."""
+"""Offline release smoke checks for the packaged Whisperer installer build."""
 
 from __future__ import annotations
 
+import argparse
 import os
-import shutil
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 
-def _check(label: str, ok: bool, message: str = "") -> bool:
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DIST_ROOT = PROJECT_ROOT / "dist"
+BUNDLE_ROOT = DIST_ROOT / "Whisperer"
+INTERNAL = BUNDLE_ROOT / "_internal"
+
+
+def check(label: str, ok: bool, detail: str = "") -> bool:
     status = "OK" if ok else "FAIL"
-    print(f"{status} - {label}: {message}")
+    print(f"{status} - {label}: {detail}")
     return ok
 
 
-def main() -> int:
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Whisperer")
-    exe_path = os.path.join(install_dir, "Whisperer.exe")
-    python_exe = next(
-        (
-            candidate
-            for candidate in (
-                os.environ.get("WHISPERER_PYTHON"),
-                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python310", "python.exe"),
-                shutil.which("python"),
-            )
-            if candidate and os.path.exists(candidate)
-        ),
-        None,
-    )
+def file_exists(label: str, path: Path) -> bool:
+    return check(label, path.exists(), str(path))
 
-    ok = True
-    ok &= _check("installed exe", os.path.exists(exe_path), exe_path)
-    ok &= _check("external python", bool(python_exe), str(python_exe))
-    ok &= _check("engine source", os.path.exists(os.path.join(project_root, "main.py")), project_root)
 
+def has_no_remote_assets() -> bool:
+    asset_patterns = [
+        re.compile(r"<script[^>]+src=[\"']https?://", re.IGNORECASE),
+        re.compile(r"<link[^>]+href=[\"']https?://", re.IGNORECASE),
+        re.compile(r"@import\s+url\([\"']?https?://", re.IGNORECASE),
+    ]
+    roots = [
+        INTERNAL / "whisperer-app" / "dist",
+        PROJECT_ROOT / "whisperer-app" / "dist",
+    ]
+    offenders: list[str] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.suffix.lower() not in {".html", ".js", ".css"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if any(pattern.search(text) for pattern in asset_patterns):
+                offenders.append(str(path))
+    return check("frontend has no remote asset URLs", not offenders, ", ".join(offenders[:3]))
+
+
+def has_no_model_weights() -> bool:
+    forbidden = {".pt", ".pth", ".safetensors", ".ckpt", ".onnx"}
+    offenders = [path for path in INTERNAL.rglob("*") if path.suffix.lower() in forbidden]
+    return check("bundle excludes local model weights", not offenders, ", ".join(str(p) for p in offenders[:3]))
+
+
+def authenticode_status(path: Path) -> str:
+    if os.name != "nt" or not path.exists():
+        return "Unavailable"
+    escaped_path = str(path).replace("'", "''")
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        f"(Get-AuthenticodeSignature -LiteralPath '{escaped_path}').Status",
+    ]
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        ok &= _check("nvidia-smi", result.returncode == 0, result.stdout.strip().splitlines()[0] if result.stdout else "")
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        return (result.stdout or result.stderr or "").strip() or "Unknown"
     except Exception as exc:
-        ok &= _check("nvidia-smi", False, str(exc))
+        return f"Error: {exc}"
 
-    if python_exe and os.path.exists(python_exe):
-        result = subprocess.run(
-            [python_exe, "-c", "import torch; print(torch.cuda.is_available())"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        ok &= _check("external python cuda", result.returncode == 0 and "True" in result.stdout, result.stdout.strip() or result.stderr.strip())
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--require-signed", action="store_true", help="Fail if the installer or exe is not signed.")
+    args = parser.parse_args(argv)
+
+    version = "6.0.5"
+    installer = DIST_ROOT / f"Whisperer-Setup-{version}.exe"
+    exe = BUNDLE_ROOT / "Whisperer.exe"
+    ok = True
+
+    ok &= file_exists("packaged exe", exe)
+    ok &= file_exists("installer", installer)
+    ok &= file_exists("React entrypoint", INTERNAL / "whisperer-app" / "dist" / "index.html")
+    ok &= file_exists("React JS asset", INTERNAL / "whisperer-app" / "dist" / "assets" / "index.js")
+    ok &= file_exists("React CSS asset", INTERNAL / "whisperer-app" / "dist" / "assets" / "index.css")
+    ok &= file_exists("QtWebEngineProcess", INTERNAL / "PyQt6" / "Qt6" / "bin" / "QtWebEngineProcess.exe")
+    ok &= file_exists("QtWebEngine resources", INTERNAL / "PyQt6" / "Qt6" / "resources" / "qtwebengine_resources.pak")
+    ok &= file_exists("QtWebEngine locales", INTERNAL / "PyQt6" / "Qt6" / "translations" / "qtwebengine_locales")
+    ok &= file_exists("V8 context snapshot", INTERNAL / "PyQt6" / "Qt6" / "resources" / "v8_context_snapshot.bin")
+    ok &= file_exists("Python runtime", INTERNAL / "python310.dll")
+    ok &= file_exists("VC runtime", INTERNAL / "VCRUNTIME140.dll")
+    ok &= has_no_remote_assets()
+    ok &= has_no_model_weights()
+
+    installer_sig = authenticode_status(installer)
+    exe_sig = authenticode_status(exe)
+    signed_ok = installer_sig == "Valid" and exe_sig == "Valid"
+    ok &= check("Authenticode signatures", signed_ok or not args.require_signed, f"installer={installer_sig} exe={exe_sig}")
 
     return 0 if ok else 1
 

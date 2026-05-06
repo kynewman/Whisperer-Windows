@@ -10,8 +10,8 @@ from typing import NamedTuple
 import config
 
 
-GITHUB_RELEASES_API = "https://api.github.com/repos/whisperer/whisperer-windows/releases/latest"
-GITHUB_RELEASES_URL = "https://github.com/whisperer/whisperer-windows/releases"
+GITHUB_RELEASES_API = "https://api.github.com/repos/kynewman/Whisperer-Windows/releases/latest"
+GITHUB_RELEASES_URL = "https://github.com/kynewman/Whisperer-Windows/releases"
 
 
 class UpdateInfo(NamedTuple):
