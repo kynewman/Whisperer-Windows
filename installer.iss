@@ -2,7 +2,7 @@
 ; Build with:  iscc installer.iss
 
 #define MyAppName "Whisperer"
-#define MyAppVersion "6.0.3"
+#define MyAppVersion "6.0.4"
 #define MyAppPublisher "Whisperer"
 #define MyAppURL "https://github.com/kynewman/Whisperer-Windows"
 #define MyAppExeName "Whisperer.exe"

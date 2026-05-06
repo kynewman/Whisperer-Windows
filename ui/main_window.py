@@ -1928,9 +1928,10 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         model_arg = self._current_model_value()
 
         if getattr(sys, "frozen", False):
+            gpu_value = self._current_gpu_value()
             source_root = self._frozen_engine_source_root()
             python_exe = self._external_engine_python()
-            if source_root and python_exe:
+            if gpu_value not in API_GPU_VALUES and source_root and python_exe:
                 command = [python_exe, "-u", os.path.join(source_root, "main.py"), f"--model={model_arg}"]
                 cwd = source_root
                 env = os.environ.copy()

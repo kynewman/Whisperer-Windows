@@ -66,7 +66,8 @@ _EARLY_MODEL_NAME = next(
     (arg.split("=", 1)[1] for arg in sys.argv[1:] if arg.startswith("--model=")),
     config.WHISPER_MODEL_SIZE,
 )
-if _EARLY_MODEL_NAME.lower().startswith("nvidia/parakeet"):
+_EARLY_STT_PROVIDER = os.environ.get("WHISPERER_STT_PROVIDER", "")
+if not _EARLY_STT_PROVIDER and _EARLY_MODEL_NAME.lower().startswith("nvidia/parakeet"):
     import torch  # must be imported before PyQt6 to avoid c10.dll crash on Windows for NeMo/PyTorch
 import numpy as np
 import keyboard

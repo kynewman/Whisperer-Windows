@@ -141,6 +141,8 @@ a = Analysis(
         "keyring",
         "keyring.backends.Windows",
         "colorama",
+        "riva",
+        "riva.client",
     ],
     hookspath=[],
     hooksconfig={},

@@ -5,6 +5,45 @@ import sys
 import traceback
 
 
+def _write_startup_crash_log(text: str) -> str:
+    try:
+        root = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Whisperer", "logs")
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, "launcher-crash.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+    except Exception:
+        return ""
+
+
+def _show_startup_crash_message(path: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        detail = f"\n\nA crash log was written to:\n{path}" if path else ""
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            f"Whisperer could not start.{detail}",
+            "Whisperer",
+            0x00000010,
+        )
+    except Exception:
+        pass
+
+
+def _handle_startup_exception(exc_type, exc, tb) -> None:
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    path = _write_startup_crash_log(text)
+    _show_startup_crash_message(path)
+
+
+if "--engine" not in sys.argv and not any(arg.startswith("--file=") for arg in sys.argv[1:]):
+    sys.excepthook = _handle_startup_exception
+
+
 def _prefer_external_python_packages_for_installed_source() -> None:
     """
     When the frozen EXE hands the UI to system Python, app code lives in
@@ -48,6 +87,8 @@ def _external_python() -> str | None:
 
 def _handoff_frozen_ui_to_python() -> bool:
     if not getattr(sys, "frozen", False):
+        return False
+    if os.environ.get("WHISPERER_ALLOW_FROZEN_UI_HANDOFF") != "1":
         return False
     if os.environ.get("WHISPERER_FORCE_FROZEN_UI") == "1":
         return False
@@ -111,8 +152,6 @@ if getattr(sys, "frozen", False):
         os.environ["QTWEBENGINE_LOCALES_PATH"] = webengine_locales
 
 if "--engine" in sys.argv:
-    if getattr(sys, "frozen", False):
-        raise SystemExit("Frozen engine mode is disabled. The installed app launches the engine with system Python.")
     import importlib
 
     args = [arg for arg in sys.argv[1:] if arg != "--engine"]
@@ -169,7 +208,11 @@ if any(arg.startswith("--file=") for arg in sys.argv[1:]):
 # feel sluggish.
 _disabled_webengine_features = ["DCompPresenter"]
 _webengine_flags = "--disable-direct-composition"
-if os.environ.get("WHISPERER_SAFE_WEBENGINE") == "1":
+_safe_webengine = (
+    os.environ.get("WHISPERER_SAFE_WEBENGINE") == "1"
+    or (getattr(sys, "frozen", False) and os.environ.get("WHISPERER_FAST_WEBENGINE") != "1")
+)
+if _safe_webengine:
     os.environ.setdefault("QT_OPENGL", "software")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     os.environ.setdefault("QSG_RHI_BACKEND", "software")
@@ -271,6 +314,8 @@ if __name__ == "__main__":
         window.show()
         sys.exit(app.exec())
     except Exception:
-        traceback.print_exc()
-        input("Press Enter to close...")
+        text = traceback.format_exc()
+        print(text, flush=True)
+        path = _write_startup_crash_log(text)
+        _show_startup_crash_message(path)
         sys.exit(1)

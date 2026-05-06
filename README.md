@@ -41,6 +41,12 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.4
+
+Whisperer 6.0.4 fixes installed builds that could appear to do nothing on
+Windows 10 by keeping the UI inside the bundled EXE instead of handing off to a
+random system Python. The default API engine path also runs from the bundle.
+
 ## Version 6.0.3
 
 Whisperer 6.0.3 keeps the normal waveform as the default overlay while leaving
