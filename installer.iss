@@ -4,7 +4,7 @@
 #define MyAppName "Whisperer"
 #define MyAppVersion "6.0.3"
 #define MyAppPublisher "Whisperer"
-#define MyAppURL "https://github.com/whisperer/whisperer-windows"
+#define MyAppURL "https://github.com/kynewman/Whisperer-Windows"
 #define MyAppExeName "Whisperer.exe"
 
 [Setup]
@@ -46,10 +46,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [Registry]
 ; Launch on login
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: "\"{app}\{#MyAppExeName}\""; Tasks: launchonlogin
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Tasks: launchonlogin
 
 ; File associations for audio/video transcription
-Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open\command"; ValueType: string; ValueData: "\"{app}\{#MyAppExeName}\" \"--file=%1\""
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""--file=%1"""
 Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: ".wav"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: ".mp3"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: ".m4a"; ValueData: ""
@@ -62,7 +62,7 @@ Root: HKCU; Subkey: "Software\Classes\.wav\OpenWithProgids"; ValueType: string; 
 Root: HKCU; Subkey: "Software\Classes\.mp3\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppName}File"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\.m4a\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppName}File"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\.mp4\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppName}File"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\{#MyAppName}File\shell\open\command"; ValueType: string; ValueData: "\"{app}\{#MyAppExeName}\" \"--file=%1\""
+Root: HKCU; Subkey: "Software\Classes\{#MyAppName}File\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""--file=%1"""
 Root: HKCU; Subkey: "Software\Classes\{#MyAppName}File"; ValueType: string; ValueName: ""; ValueData: "Audio/Video File"
 
 [UninstallDelete]
