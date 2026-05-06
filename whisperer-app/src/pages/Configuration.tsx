@@ -66,7 +66,7 @@ export default function ConfigPage({
     pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
     ollamaUrl: String(appSettings.llm?.ollama_url ?? "http://localhost:11434"),
     openaiCompatUrl: String(appSettings.llm?.openai_compat_url ?? "http://localhost:8000"),
-    overlayStyle: String(appSettings.overlay?.visualizer_style ?? "light_wave"),
+    overlayStyle: String(appSettings.overlay?.visualizer_style ?? "waveform"),
   });
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [draftShortcut, setDraftShortcut] = useState<string[]>([]);
@@ -102,7 +102,7 @@ export default function ConfigPage({
       pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
       ollamaUrl: String(appSettings.llm?.ollama_url ?? "http://localhost:11434"),
       openaiCompatUrl: String(appSettings.llm?.openai_compat_url ?? "http://localhost:8000"),
-      overlayStyle: String(appSettings.overlay?.visualizer_style ?? "light_wave"),
+      overlayStyle: String(appSettings.overlay?.visualizer_style ?? "waveform"),
     }));
   }, [appSettings]);
 

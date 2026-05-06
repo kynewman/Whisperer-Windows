@@ -41,6 +41,11 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.3
+
+Whisperer 6.0.3 keeps the normal waveform as the default overlay while leaving
+Light Wave available as an experimental Appearance option.
+
 ## Version 6.0.2
 
 Whisperer 6.0.2 makes NVIDIA API Parakeet the default device for lightweight

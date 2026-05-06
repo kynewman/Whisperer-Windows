@@ -76,7 +76,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "overlay": {
         "position": None,
-        "visualizer_style": "light_wave",
+        "visualizer_style": "waveform",
     },
     "recording_window": {
         "style": "mini",
