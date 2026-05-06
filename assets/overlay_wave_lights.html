@@ -106,13 +106,13 @@
       float activeBand = smoothstep(0.18, 0.78, rawBandAt(x));
       float voiceShape = max(activeBand * 1.22, uMicLevel * 0.08);
       float idleWave = (
-        sin(x * 4.6 + t * 1.55 + phase) * 0.070 +
-        sin(x * 8.2 - t * 1.18 + phase * 1.7) * 0.025 +
-        sin(x * 13.0 + t * 0.72 - phase) * 0.012
+        sin(x * 4.6 + t * 0.82 + phase) * 0.070 +
+        sin(x * 8.2 - t * 0.62 + phase * 1.7) * 0.025 +
+        sin(x * 13.0 + t * 0.38 - phase) * 0.012
       ) * (0.48 + activeBand * 1.15);
       float bandLift = smoothstep(0.20, 0.74, rawBandAt(x));
       float bandContrast = abs(rawBandAt(x + 0.18) - rawBandAt(x - 0.18));
-      float carrier = sin(x * 2.25 + t * 0.42 + phase * 0.45);
+      float carrier = sin(x * 2.25 + t * 0.24 + phase * 0.45);
       float spectralLift = bandLift * carrier * (0.10 + activeBand * 0.34 + uMicLevel * 0.06);
       return clamp(idleWave + spectralLift + bandContrast * 0.036 * sign(carrier), -0.42, 0.42);
     }
@@ -127,7 +127,7 @@
       vec4 finalColor = vec4(0.0);
       float totalDistance = 0.0;
       float mic = smoothstep(0.0, 1.0, uMicLevel);
-      float timeElapsed = uTime * (0.46 + mic * 0.055);
+      float timeElapsed = uTime * (0.24 + mic * 0.018);
       float pixelNoise = generateFineNoise(fragCoord) * 0.004;
       float spectralEnergy = bandAt(uv.x);
       float directWave = waveform(uv.x, timeElapsed, 0.0) * (0.74 + spectralEnergy * 0.36 + mic * 0.08);

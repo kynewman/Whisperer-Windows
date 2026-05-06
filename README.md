@@ -41,6 +41,12 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.1
+
+Whisperer 6.0.1 adds an experimental Light Wave overlay visualizer that can be
+selected from Configuration > Appearance while keeping the native waveform
+available as a fallback.
+
 ## Version 6.0.0
 
 Whisperer 6.0.0 adds the low-latency Parakeet streaming path, adaptive

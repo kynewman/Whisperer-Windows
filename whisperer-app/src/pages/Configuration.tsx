@@ -66,6 +66,7 @@ export default function ConfigPage({
     pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
     ollamaUrl: String(appSettings.llm?.ollama_url ?? "http://localhost:11434"),
     openaiCompatUrl: String(appSettings.llm?.openai_compat_url ?? "http://localhost:8000"),
+    overlayStyle: String(appSettings.overlay?.visualizer_style ?? "light_wave"),
   });
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [draftShortcut, setDraftShortcut] = useState<string[]>([]);
@@ -101,6 +102,7 @@ export default function ConfigPage({
       pasteMethod: String(appSettings.paste?.method ?? "clipboard_paste"),
       ollamaUrl: String(appSettings.llm?.ollama_url ?? "http://localhost:11434"),
       openaiCompatUrl: String(appSettings.llm?.openai_compat_url ?? "http://localhost:8000"),
+      overlayStyle: String(appSettings.overlay?.visualizer_style ?? "light_wave"),
     }));
   }, [appSettings]);
 
@@ -118,6 +120,7 @@ export default function ConfigPage({
     if (k === "pasteFastPath") setSetting("performance", "paste_fast_path_enabled", v);
     if (k === "ollamaUrl") setSetting("llm", "ollama_url", v);
     if (k === "openaiCompatUrl") setSetting("llm", "openai_compat_url", v);
+    if (k === "overlayStyle") setSetting("overlay", "visualizer_style", v);
   };
   const setT = <K extends keyof Tweaks>(k: K, v: Tweaks[K]) => {
     setTweaks({ ...tweaks, [k]: v });
@@ -366,6 +369,8 @@ export default function ConfigPage({
              control={<Select value={tweaks.theme} onChange={(v) => setT("theme", v as Tweaks["theme"])} options={[{ value: "sun", label: "Sun" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} width={140} />} />
         <Row title="Accent" subtitle="Used for active states, buttons, and the live waveform."
              control={<Select value={tweaks.accent} onChange={(v) => setT("accent", v as Tweaks["accent"])} options={[{ value: "moss", label: "Moss" }, { value: "sage", label: "Sage" }, { value: "clay", label: "Clay" }, { value: "copper", label: "Copper" }, { value: "plum", label: "Plum" }, { value: "slate", label: "Slate" }]} width={160} />} />
+        <Row title="Overlay" subtitle="Choose the dictation overlay visual."
+             control={<Select value={settings.overlayStyle} onChange={(v) => set("overlayStyle", v)} options={[{ value: "waveform", label: "Normal waveform" }, { value: "light_wave", label: "Light Wave (Experimental)" }]} width={220} />} />
         <Row title="Density" subtitle="Slightly tighter spacing on smaller displays."
              control={<Select value={tweaks.density} onChange={(v) => setT("density", v as Tweaks["density"])} options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} width={160} />}
              divider={false} />

@@ -112,6 +112,8 @@ WAVE_LIGHTS_WIDTH = 392.0
 WAVE_LIGHTS_HEIGHT = 86.0
 WAVE_LIGHTS_CONTROL_GUTTER = 48.0
 WAVE_LIGHTS_BANDS = 24
+OVERLAY_STYLE_WAVEFORM = "waveform"
+OVERLAY_STYLE_LIGHT_WAVE = "light_wave"
 
 
 class WaveformOverlay(QWidget):
@@ -161,11 +163,9 @@ class WaveformOverlay(QWidget):
         self._wave_lights_last_level = -1.0
         self._wave_lights_bands = np.zeros(WAVE_LIGHTS_BANDS, dtype=np.float64)
         self._wave_lights_last_bands_ts = 0.0
-        self._wave_lights_enabled = (
-            os.environ.get(WAVE_LIGHTS_ENV) == "1"
-            and QWebEngineView is not None
-            and os.path.exists(WAVE_LIGHTS_ASSET)
-        )
+        self._wave_lights_available = QWebEngineView is not None and os.path.exists(WAVE_LIGHTS_ASSET)
+        self._wave_lights_failed = False
+        self._wave_lights_enabled = self._wave_lights_available and self._selected_overlay_style() == OVERLAY_STYLE_LIGHT_WAVE
         self._init_window()
         if self._wave_lights_enabled:
             self._init_wave_lights_view()
@@ -226,6 +226,35 @@ class WaveformOverlay(QWidget):
         self._no_audio_since = None
         self._no_audio_warning = False
 
+    def _selected_overlay_style(self) -> str:
+        try:
+            overlay_settings = load_settings().get("overlay", {})
+            style = overlay_settings.get("visualizer_style")
+        except Exception:
+            style = None
+        if style in (OVERLAY_STYLE_WAVEFORM, OVERLAY_STYLE_LIGHT_WAVE):
+            return str(style)
+        if os.environ.get(WAVE_LIGHTS_ENV) == "1":
+            return OVERLAY_STYLE_LIGHT_WAVE
+        return OVERLAY_STYLE_WAVEFORM
+
+    def _refresh_wave_lights_selection(self):
+        enabled = (
+            self._wave_lights_available
+            and not self._wave_lights_failed
+            and self._selected_overlay_style() == OVERLAY_STYLE_LIGHT_WAVE
+        )
+        self._wave_lights_enabled = enabled
+        if enabled and self._wave_lights_view is None:
+            self._init_wave_lights_view()
+        elif not enabled and self._wave_lights_view is not None:
+            self._wave_lights_view.hide()
+            if self._wave_lights_loaded:
+                self._wave_lights_view.page().runJavaScript(
+                    "window.setOverlayActive && window.setOverlayActive(false);"
+                )
+        self._sync_wave_lights_visibility()
+
     def _init_wave_lights_view(self):
         try:
             view = QWebEngineView(self)
@@ -245,12 +274,14 @@ class WaveformOverlay(QWidget):
             self._wave_lights_view = view
         except Exception as exc:
             print(f"Wave Lights experiment unavailable: {exc}", flush=True)
+            self._wave_lights_failed = True
             self._wave_lights_enabled = False
             self._wave_lights_view = None
 
     def _on_wave_lights_loaded(self, ok: bool):
         self._wave_lights_loaded = bool(ok)
         if not ok:
+            self._wave_lights_failed = True
             self._wave_lights_enabled = False
             if self._wave_lights_view is not None:
                 self._wave_lights_view.hide()
@@ -617,6 +648,7 @@ class WaveformOverlay(QWidget):
         self._animate_to_position(target, save_when_done=True)
 
     def fade_in(self, *, keep_model_loading: bool = False):
+        self._refresh_wave_lights_selection()
         self._position_on_screen()
         self._bar_heights[:] = 0.0
         self._reset_visual_gain()
@@ -848,6 +880,8 @@ class WaveformOverlay(QWidget):
         self._send_wave_lights_bands(self._compute_wave_lights_bands(chunk if self._active else None))
 
     def set_active(self, active: bool):
+        if active:
+            self._refresh_wave_lights_selection()
         self._active = active
         if active:
             self._model_loading = False
