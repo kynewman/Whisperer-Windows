@@ -41,6 +41,20 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.7
+
+Whisperer 6.0.7 adds another public-install hardening pass. The installer now
+uses a setup mutex, removes stale debug/model/frontend payloads left by older
+upgrades before copying the new bundle, and copies the installer log to
+`%LOCALAPPDATA%\Whisperer\logs\installer-latest.log` even when setup exits
+outside the normal success path.
+
+Frozen startup now checks for the required Qt WebEngine, platform plugin, V8
+snapshot, locale, and React dashboard files before Qt loads. If an install is
+incomplete or antivirus software quarantined a required file, Whisperer writes
+`startup-integrity.log` and shows a direct reinstall/diagnostics message instead
+of falling through to a blank window.
+
 ## Version 6.0.6
 
 Whisperer 6.0.6 is a final packaging polish pass for public installs. The

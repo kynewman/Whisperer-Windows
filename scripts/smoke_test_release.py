@@ -80,6 +80,26 @@ def has_no_debug_qt_payload() -> bool:
     return check("bundle excludes Qt debug/devtools/QML payload", not offenders, ", ".join(str(p) for p in offenders[:3]))
 
 
+def installer_has_upgrade_cleanup() -> bool:
+    installer_script = PROJECT_ROOT / "installer.iss"
+    try:
+        text = installer_script.read_text(encoding="utf-8", errors="replace").lower()
+    except Exception as exc:
+        return check("installer upgrade cleanup rules", False, f"could not read installer.iss: {exc}")
+    required = [
+        "[installdelete]",
+        "qtwebengine_devtools_resources",
+        "*.debug.pak",
+        "pyqt6\\qt6\\qml",
+        "whisperer-app\\dist\\assets\\*.js",
+        "setupmutex=whispererwindowsinstaller",
+        "deinitializesetup",
+        "installer-latest.log",
+    ]
+    missing = [item for item in required if item not in text]
+    return check("installer upgrade cleanup rules", not missing, ", ".join(missing))
+
+
 def authenticode_status(path: Path) -> str:
     if os.name != "nt" or not path.exists():
         return "Unavailable"
@@ -123,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     ok &= has_no_remote_assets()
     ok &= has_no_model_weights()
     ok &= has_no_debug_qt_payload()
+    ok &= installer_has_upgrade_cleanup()
 
     installer_sig = authenticode_status(installer)
     exe_sig = authenticode_status(exe)

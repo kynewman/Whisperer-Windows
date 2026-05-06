@@ -257,7 +257,7 @@ function parseSnapshot(raw: string | AppSnapshot | undefined): AppSnapshot | nul
 export default function App() {
   const [activePage, setActivePage] = useState<NavKey>("home");
   const [engineState, setEngineState] = useState<EngineState>("stopped");
-  const [version, setVersion] = useState("6.0.6");
+  const [version, setVersion] = useState("6.0.7");
   const [settings, setSettings] = useState<AppSettings>({});
   const [models, setModels] = useState<BridgeOption[]>(DEFAULT_MODELS);
   const [gpus, setGpus] = useState<BridgeOption[]>(DEFAULT_GPUS);

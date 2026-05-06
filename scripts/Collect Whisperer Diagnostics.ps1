@@ -48,7 +48,8 @@ $desktop = [Environment]::GetFolderPath("Desktop")
 if (-not $desktop) {
     $desktop = $tempRoot
 }
-$zipPath = Join-Path $desktop "Whisperer-Diagnostics-$timestamp.zip"
+$zipName = "Whisperer-Diagnostics-$timestamp.zip"
+$zipPath = Join-Path $desktop $zipName
 
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -96,6 +97,22 @@ Add-CommandOutput $metadata "Installed executable:" {
             Format-List
     } else {
         "Whisperer.exe was not found beside the diagnostics script."
+    }
+}
+
+Add-CommandOutput $metadata "Bundle integrity:" {
+    $required = @(
+        @{ Label = "Whisperer.exe"; Path = (Join-Path $PSScriptRoot "Whisperer.exe") },
+        @{ Label = "React dashboard"; Path = (Join-Path $PSScriptRoot "_internal\whisperer-app\dist\index.html") },
+        @{ Label = "Qt platform plugin"; Path = (Join-Path $PSScriptRoot "_internal\PyQt6\Qt6\plugins\platforms\qwindows.dll") },
+        @{ Label = "QtWebEngineProcess"; Path = (Join-Path $PSScriptRoot "_internal\PyQt6\Qt6\bin\QtWebEngineProcess.exe") },
+        @{ Label = "QtWebEngine resources"; Path = (Join-Path $PSScriptRoot "_internal\PyQt6\Qt6\resources\qtwebengine_resources.pak") },
+        @{ Label = "V8 context snapshot"; Path = (Join-Path $PSScriptRoot "_internal\PyQt6\Qt6\resources\v8_context_snapshot.bin") },
+        @{ Label = "QtWebEngine en-US locale"; Path = (Join-Path $PSScriptRoot "_internal\PyQt6\Qt6\translations\qtwebengine_locales\en-US.pak") }
+    )
+    foreach ($item in $required) {
+        $exists = Test-Path -LiteralPath $item.Path
+        "{0}: {1} - {2}" -f $item.Label, $(if ($exists) { "OK" } else { "MISSING" }), (Remove-PrivatePathText $item.Path)
     }
 }
 
@@ -147,7 +164,12 @@ if (Test-Path -LiteralPath $logDir) {
     }
 }
 
-Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipPath -Force
+try {
+    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipPath -Force -ErrorAction Stop
+} catch {
+    $zipPath = Join-Path $tempRoot $zipName
+    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipPath -Force -ErrorAction Stop
+}
 
 Write-Host ""
 Write-Host "Whisperer diagnostics were saved to:"

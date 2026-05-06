@@ -54,6 +54,22 @@ def _show_startup_crash_message(path: str) -> None:
         pass
 
 
+def _show_startup_problem_message(message: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            message,
+            "Whisperer",
+            0x00000010,
+        )
+    except Exception:
+        pass
+
+
 def _handle_startup_exception(exc_type, exc, tb) -> None:
     text = "".join(traceback.format_exception(exc_type, exc, tb))
     _LOG.error("unhandled startup exception\n%s", text)
@@ -181,6 +197,48 @@ if getattr(sys, "frozen", False):
         os.path.exists(webengine_process),
     )
 
+
+def _check_frozen_ui_bundle_integrity() -> bool:
+    if not getattr(sys, "frozen", False):
+        return True
+    if "--engine" in sys.argv or any(arg.startswith("--file=") for arg in sys.argv[1:]):
+        return True
+    root = getattr(sys, "_MEIPASS", "")
+    if not root:
+        root = os.path.join(os.path.dirname(sys.executable), "_internal")
+    required = [
+        ("Qt platform plugin", os.path.join(root, "PyQt6", "Qt6", "plugins", "platforms", "qwindows.dll")),
+        ("QtWebEngine process", os.path.join(root, "PyQt6", "Qt6", "bin", "QtWebEngineProcess.exe")),
+        ("QtWebEngine resources", os.path.join(root, "PyQt6", "Qt6", "resources", "qtwebengine_resources.pak")),
+        ("V8 context snapshot", os.path.join(root, "PyQt6", "Qt6", "resources", "v8_context_snapshot.bin")),
+        ("QtWebEngine locale", os.path.join(root, "PyQt6", "Qt6", "translations", "qtwebengine_locales", "en-US.pak")),
+        ("React dashboard", os.path.join(root, "whisperer-app", "dist", "index.html")),
+    ]
+    missing = [(label, path) for label, path in required if not os.path.exists(path)]
+    if not missing:
+        return True
+
+    lines = [
+        "Whisperer installation integrity check failed.",
+        f"exe={sys.executable}",
+        f"bundleRoot={root}",
+        "missing=" + repr(missing),
+    ]
+    text = "\n".join(lines)
+    _LOG.error(text)
+    append_log_line("startup-integrity.log", text)
+    message = (
+        "Whisperer could not start because the installation appears to be incomplete or damaged.\n\n"
+        "Try reinstalling the latest Whisperer setup file. If antivirus software quarantined files, "
+        "restore them or allow Whisperer, then reinstall.\n\n"
+        f"Diagnostic logs:\n{log_path('startup-integrity.log')}\n\n"
+        "Missing files:\n"
+        + "\n".join(f"- {label}: {path}" for label, path in missing[:6])
+    )
+    _show_startup_problem_message(message)
+    return False
+
+
 if "--engine" in sys.argv:
     import importlib
 
@@ -241,6 +299,9 @@ if any(arg.startswith("--file=") for arg in sys.argv[1:]):
         print(text, flush=True)
         sys.exit(1)
     sys.exit(0)
+
+if not _check_frozen_ui_bundle_integrity():
+    sys.exit(1)
 
 # QWebEngine/Chromium can crash or paint blank on some Windows DirectComposition
 # paths. Keep that specific guard, but avoid the heavy all-software compositor

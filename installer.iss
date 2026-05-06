@@ -2,7 +2,7 @@
 ; Build with:  iscc installer.iss
 
 #define MyAppName "Whisperer"
-#define MyAppVersion "6.0.6"
+#define MyAppVersion "6.0.7"
 #define MyAppPublisher "Whisperer"
 #define MyAppURL "https://github.com/kynewman/Whisperer-Windows"
 #define MyAppExeName "Whisperer.exe"
@@ -25,6 +25,7 @@ MinVersion=10.0
 CloseApplications=force
 RestartApplications=no
 AppMutex=Local\WhispererWindowsUI,Local\WhispererWindowsEngine
+SetupMutex=WhispererWindowsInstaller
 OutputDir=dist
 OutputBaseFilename=Whisperer-Setup-{#MyAppVersion}
 SetupIconFile=assets\whisperer.ico
@@ -88,17 +89,53 @@ Root: HKCU; Subkey: "Software\Classes\.webm\OpenWithProgids"; ValueType: string;
 Root: HKCU; Subkey: "Software\Classes\{#MyAppName}File\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""--file=%1"""
 Root: HKCU; Subkey: "Software\Classes\{#MyAppName}File"; ValueType: string; ValueName: ""; ValueData: "Audio/Video File"
 
+[InstallDelete]
+; Clean up files removed from newer lightweight bundles so upgrades do not
+; leave stale payloads or old hashed frontend assets behind.
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\resources\*.debug.pak"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\resources\*.debug.bin"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\resources\qtwebengine_devtools_resources*.pak"
+Type: filesandordirs; Name: "{app}\_internal\PyQt6\Qt6\qml"
+Type: files; Name: "{app}\_internal\whisperer-app\dist\assets\*.js"
+Type: files; Name: "{app}\_internal\whisperer-app\dist\assets\*.css"
+Type: filesandordirs; Name: "{app}\_internal\torch"
+Type: filesandordirs; Name: "{app}\_internal\torchaudio"
+Type: filesandordirs; Name: "{app}\_internal\torchvision"
+Type: filesandordirs; Name: "{app}\_internal\transformers"
+Type: filesandordirs; Name: "{app}\_internal\nemo"
+Type: filesandordirs; Name: "{app}\_internal\nemo_toolkit"
+Type: filesandordirs; Name: "{app}\_internal\faster_whisper"
+Type: filesandordirs; Name: "{app}\_internal\ctranslate2"
+Type: filesandordirs; Name: "{app}\_internal\huggingface_hub"
+Type: filesandordirs; Name: "{app}\_internal\safetensors"
+Type: filesandordirs; Name: "{app}\_internal\tokenizers"
+
 [UninstallDelete]
 Type: dirifempty; Name: "{app}"
 
 [Code]
-procedure CurStepChanged(CurStep: TSetupStep);
+procedure CopyInstallerLog();
 var
+  LogSource: string;
   LogTarget: string;
 begin
-  if CurStep = ssDone then begin
-    LogTarget := ExpandConstant('{localappdata}\Whisperer\logs\installer-{#MyAppVersion}.log');
-    ForceDirectories(ExtractFileDir(LogTarget));
-    CopyFile(ExpandConstant('{log}'), LogTarget, False);
-  end;
+  LogSource := ExpandConstant('{log}');
+  if LogSource = '' then
+    exit;
+
+  LogTarget := ExpandConstant('{localappdata}\Whisperer\logs\installer-{#MyAppVersion}.log');
+  ForceDirectories(ExtractFileDir(LogTarget));
+  CopyFile(LogSource, LogTarget, False);
+  CopyFile(LogSource, ExpandConstant('{localappdata}\Whisperer\logs\installer-latest.log'), False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then
+    CopyInstallerLog();
+end;
+
+procedure DeinitializeSetup();
+begin
+  CopyInstallerLog();
 end;
