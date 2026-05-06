@@ -15,7 +15,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_start_engine": True,
         "launch_on_login": False,
         "default_model": "nvidia/parakeet-tdt-0.6b-v2",
-        "gpu_device": "auto",
+        "gpu_device": "nvidia_api",
     },
     "dictation": {
         "restore_clipboard_after_paste": False,

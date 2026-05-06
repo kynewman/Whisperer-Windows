@@ -41,6 +41,12 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.2
+
+Whisperer 6.0.2 makes NVIDIA API Parakeet the default device for lightweight
+first launch. Local GPU model downloads now require confirmation when the model
+is not already cached.
+
 ## Version 6.0.1
 
 Whisperer 6.0.1 adds an experimental Light Wave overlay visualizer that can be

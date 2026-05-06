@@ -44,6 +44,7 @@ GROQ_API_LEGACY_GPU_VALUE = "grok_api"
 GROQ_API_STT_PROVIDER = "groq_whisper"
 NVIDIA_API_GPU_VALUE = "nvidia_api"
 NVIDIA_API_STT_PROVIDER = "nvidia_parakeet"
+API_GPU_VALUES = {GROQ_API_GPU_VALUE, GROQ_API_LEGACY_GPU_VALUE, NVIDIA_API_GPU_VALUE}
 LOADING_PREVIEW_HIDE_MS = 1400
 LOADING_READY_MORPH_HIDE_MS = 900
 LOADING_INTERACTION_HIDE_RETRY_MS = 450
@@ -78,7 +79,7 @@ class _DwmMargins(ctypes.Structure):
 MODEL_OPTIONS = [
     {
         "value": "nvidia/parakeet-tdt-0.6b-v2",
-        "label": "NVIDIA Parakeet TDT 0.6B (RNNT streaming)",
+        "label": "NVIDIA Parakeet TDT 0.6B RNNT streaming",
         "size": "0.6 B",
         "badge": "Local",
         "speed": "Streaming",
@@ -244,6 +245,10 @@ class Bridge(QObject):
     def setGpu(self, value: str) -> str:
         return self._window.set_gpu(value)
 
+    @pyqtSlot(str, result=str)
+    def modelCacheStatus(self, value: str) -> str:
+        return self._window.model_cache_status(value)
+
     @pyqtSlot(str, str, result=str)
     def setApiKey(self, service: str, value: str) -> str:
         return self._window.set_api_key(service, value)
@@ -361,6 +366,7 @@ _BRIDGE_SHIM = r"""
         micLevel: function() { return callResult("micLevel"); },
         setModel: function(value) { return callResult("setModel", value); },
         setGpu: function(value) { return callResult("setGpu", value); },
+        modelCacheStatus: function(value) { return callResult("modelCacheStatus", value); },
         setApiKey: function(service, value) { return callResult("setApiKey", service, value); },
         testApiKey: function(service) { return callResult("testApiKey", service); },
         setMicrophone: function(value) { return callResult("setMicrophone", value); },
@@ -836,7 +842,7 @@ class MainWindow(QMainWindow):
             "microphones": microphones,
             "inputChannels": self._load_input_channel_options(selected_microphone),
             "selectedModel": self._current_model_value(),
-            "selectedGpu": str(self.settings.get("startup", {}).get("gpu_device", GPU_AUTO_VALUE)),
+            "selectedGpu": self._current_gpu_value(),
             "selectedMicrophone": selected_microphone,
             "selectedInputChannel": str(self.settings.get("audio", {}).get("input_channel", 0) or 0),
             "activeMode": self._active_mode_name(),
@@ -1191,12 +1197,21 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
     def set_gpu(self, value: str) -> str:
         valid_values = {gpu_value for _label, gpu_value in self._gpu_options}
         if value not in valid_values:
-            value = GPU_AUTO_VALUE
+            value = NVIDIA_API_GPU_VALUE
         self.settings.setdefault("startup", {})["gpu_device"] = value
         snapshot = self._save_and_emit()
         if self.process and self.process.poll() is None:
             self.restart_engine()
         return snapshot
+
+    def model_cache_status(self, value: str) -> str:
+        valid_values = {item["value"] for item in MODEL_OPTIONS}
+        if value not in valid_values:
+            value = MODEL_OPTIONS[0]["value"]
+        return json.dumps(
+            {"model": value, "cached": self._local_model_cache_exists(value)},
+            separators=(",", ":"),
+        )
 
     def set_api_key(self, service: str, value: str) -> str:
         service = (service or "").strip().lower()
@@ -1371,11 +1386,35 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         valid_values = {item["value"] for item in MODEL_OPTIONS}
         return value if value in valid_values else MODEL_OPTIONS[0]["value"]
 
+    def _current_gpu_value(self) -> str:
+        value = str(self.settings.get("startup", {}).get("gpu_device", NVIDIA_API_GPU_VALUE))
+        valid_values = {gpu_value for _label, gpu_value in self._gpu_options}
+        return value if value in valid_values else NVIDIA_API_GPU_VALUE
+
+    def _local_model_cache_exists(self, model_name: str) -> bool:
+        cache_dir_name = "models--" + model_name.replace("/", "--")
+        candidates = [
+            os.path.join(config.MODEL_CACHE_DIR, cache_dir_name),
+            os.path.join(config.MODEL_CACHE_DIR, "huggingface", "hub", cache_dir_name),
+        ]
+        for root in candidates:
+            snapshots = os.path.join(root, "snapshots")
+            if not os.path.isdir(snapshots):
+                continue
+            for snapshot in os.listdir(snapshots):
+                path = os.path.join(snapshots, snapshot)
+                try:
+                    if os.path.isdir(path) and any(os.scandir(path)):
+                        return True
+                except OSError:
+                    pass
+        return False
+
     def _load_gpu_options(self) -> list[tuple[str, str]]:
         options = [
-            ("Auto (primary CUDA GPU)", GPU_AUTO_VALUE),
+            ("NVIDIA API Parakeet", NVIDIA_API_GPU_VALUE),
             ("Groq API (Whisper)", GROQ_API_GPU_VALUE),
-            ("NVIDIA API (Parakeet)", NVIDIA_API_GPU_VALUE),
+            ("Auto (primary CUDA GPU)", GPU_AUTO_VALUE),
         ]
         try:
             creationflags = 0x08000000 if os.name == "nt" else 0
@@ -1407,7 +1446,7 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         return options
 
     def _apply_engine_gpu_env(self, env: dict[str, str]):
-        gpu_value = str(self.settings.get("startup", {}).get("gpu_device", GPU_AUTO_VALUE))
+        gpu_value = self._current_gpu_value()
         if gpu_value in {GROQ_API_GPU_VALUE, GROQ_API_LEGACY_GPU_VALUE}:
             env["WHISPERER_STT_PROVIDER"] = GROQ_API_STT_PROVIDER
             env.pop("CUDA_VISIBLE_DEVICES", None)
