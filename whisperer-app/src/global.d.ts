@@ -40,6 +40,7 @@ declare global {
       setSetting?: (section: string, key: string, value: unknown) => Promise<string>;
       checkForUpdates?: () => Promise<string>;
       installUpdate?: () => Promise<string>;
+      continueUnsignedUpdate?: (installerPath: string) => Promise<string>;
     };
   }
 }

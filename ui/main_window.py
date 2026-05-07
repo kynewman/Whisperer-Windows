@@ -177,6 +177,7 @@ class Bridge(QObject):
     engineStateChanged = pyqtSignal(str)
     settingsChanged = pyqtSignal(str)
     sttBenchmarkFinished = pyqtSignal(str)
+    updateProgress = pyqtSignal(str)
 
     def __init__(self, window: "MainWindow"):
         super().__init__(window)
@@ -356,6 +357,10 @@ class Bridge(QObject):
     def installUpdate(self) -> str:
         return self._window.install_update()
 
+    @pyqtSlot(str, result=str)
+    def continueUnsignedUpdate(self, installer_path: str) -> str:
+        return self._window.continue_unsigned_update(installer_path)
+
 
 _BRIDGE_SHIM = r"""
 (function() {
@@ -412,7 +417,8 @@ _BRIDGE_SHIM = r"""
           return callResult("setSetting", section, key, JSON.stringify(value));
         },
         checkForUpdates: function() { return callResult("checkForUpdates"); },
-        installUpdate: function() { return callResult("installUpdate"); }
+        installUpdate: function() { return callResult("installUpdate"); },
+        continueUnsignedUpdate: function(path) { return callResult("continueUnsignedUpdate", path || ""); }
       };
       b.engineStateChanged.connect(function(state) {
         window.dispatchEvent(new CustomEvent("whisperer:engineState", { detail: state }));
@@ -422,6 +428,9 @@ _BRIDGE_SHIM = r"""
       });
       b.sttBenchmarkFinished.connect(function(result) {
         window.dispatchEvent(new CustomEvent("whisperer:sttBenchmarkResult", { detail: result }));
+      });
+      b.updateProgress.connect(function(result) {
+        window.dispatchEvent(new CustomEvent("whisperer:updateProgress", { detail: result }));
       });
       window.dispatchEvent(new Event("whisperer:ready"));
     });
@@ -479,6 +488,7 @@ class MainWindow(QMainWindow):
 
     loadingPreviewRequested = pyqtSignal()
     backupTranscriptionFinished = pyqtSignal(str, bool, str, str)
+    updateCloseRequested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -510,6 +520,7 @@ class MainWindow(QMainWindow):
 
         self.settings = load_settings()
         self._local_engine_status_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._update_install_busy = False
         self._gpu_options = self._load_gpu_options()
         self._engine_output_queue: queue.Queue[str] = queue.Queue()
         self._engine_output_lines: list[str] = []
@@ -555,6 +566,7 @@ class MainWindow(QMainWindow):
         self._stt_benchmark_timeout_timer.timeout.connect(self._on_stt_benchmark_timeout)
         self.loadingPreviewRequested.connect(self._show_loading_preview)
         self.backupTranscriptionFinished.connect(self._finish_last_dictation_transcription)
+        self.updateCloseRequested.connect(lambda: QTimer.singleShot(800, self.force_quit))
         if self._loading_preview_enabled:
             self._register_loading_preview_shortcuts()
 
@@ -1022,20 +1034,80 @@ class MainWindow(QMainWindow):
             )
 
     def install_update(self) -> str:
-        try:
-            from core.updater import download_and_launch_update
+        if self._update_install_busy:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "currentVersion": config.VERSION,
+                    "error": "An update is already in progress.",
+                },
+                separators=(",", ":"),
+            )
+        self._update_install_busy = True
 
-            payload = download_and_launch_update()
-        except Exception as exc:
-            payload = {
-                "ok": False,
-                "currentVersion": config.VERSION,
-                "updateAvailable": False,
-                "error": f"Could not install update: {exc}",
-            }
-        if payload.get("ok") and payload.get("shouldCloseApp"):
-            QTimer.singleShot(800, self.force_quit)
-        return json.dumps(payload, separators=(",", ":"))
+        def _progress(event: dict[str, Any]):
+            self._emit_update_progress(event)
+
+        def _run():
+            try:
+                from core.updater import download_and_launch_update
+
+                payload = download_and_launch_update(progress_callback=_progress)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "currentVersion": config.VERSION,
+                    "updateAvailable": False,
+                    "error": f"Could not install update: {exc}",
+                }
+                self._emit_update_progress({"phase": "error", "percent": 0, "message": payload["error"], "payload": payload})
+            finally:
+                self._update_install_busy = False
+            self._emit_update_progress({"phase": "complete" if payload.get("ok") else "result", "percent": 100, "payload": payload})
+            if payload.get("ok") and payload.get("shouldCloseApp"):
+                self.updateCloseRequested.emit()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return json.dumps({"ok": True, "started": True, "currentVersion": config.VERSION}, separators=(",", ":"))
+
+    def continue_unsigned_update(self, installer_path: str) -> str:
+        if self._update_install_busy:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "currentVersion": config.VERSION,
+                    "error": "An update is already in progress.",
+                },
+                separators=(",", ":"),
+            )
+        self._update_install_busy = True
+        self._emit_update_progress({"phase": "installing", "percent": 100, "message": "Launching unsigned installer..."})
+
+        def _run():
+            try:
+                from core.updater import launch_downloaded_update
+
+                payload = launch_downloaded_update(installer_path, allow_unsigned=True)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "currentVersion": config.VERSION,
+                    "error": f"Could not launch unsigned installer: {exc}",
+                }
+            finally:
+                self._update_install_busy = False
+            self._emit_update_progress({"phase": "complete" if payload.get("ok") else "error", "percent": 100, "payload": payload, "message": payload.get("error", "")})
+            if payload.get("ok") and payload.get("shouldCloseApp"):
+                self.updateCloseRequested.emit()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return json.dumps({"ok": True, "started": True, "currentVersion": config.VERSION}, separators=(",", ":"))
+
+    def _emit_update_progress(self, event: dict[str, Any]) -> None:
+        try:
+            self.bridge.updateProgress.emit(json.dumps(event, separators=(",", ":")))
+        except Exception:
+            pass
 
     def snapshot_json(self) -> str:
         self.settings = load_settings()

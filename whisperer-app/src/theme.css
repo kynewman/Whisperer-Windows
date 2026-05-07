@@ -208,3 +208,16 @@ body[data-density="compact"] {
     transform: scaleY(1);
   }
 }
+
+@keyframes updateIndeterminate {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+.update-progress-fill.is-indeterminate {
+  animation: updateIndeterminate 1.15s ease-in-out infinite;
+}

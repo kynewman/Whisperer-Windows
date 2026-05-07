@@ -10,6 +10,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 import config
@@ -21,6 +22,7 @@ GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 INSTALLER_NAME_RE = re.compile(r"^Whisperer-Setup-(\d+\.\d+\.\d+(?:\.\d+)?)\.exe$", re.IGNORECASE)
 ALLOW_UNSIGNED_UPDATE_ENV = "WHISPERER_ALLOW_UNSIGNED_UPDATE_INSTALLER"
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass
@@ -127,6 +129,10 @@ def _sha256(path: str) -> str:
     return digest.hexdigest().upper()
 
 
+def _powershell_single_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _authenticode_status(path: str) -> str:
     if os.name != "nt":
         return "Unavailable"
@@ -138,9 +144,8 @@ def _authenticode_status(path: str) -> str:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                "$sig = Get-AuthenticodeSignature -LiteralPath $args[0]; "
-                "Write-Output $sig.Status",
-                path,
+                f"$sig = Get-AuthenticodeSignature -LiteralPath {_powershell_single_quote(path)}; "
+                "Write-Output ([string]$sig.Status)",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -185,69 +190,141 @@ def check_for_update() -> UpdateCheck:
     )
 
 
-def download_and_launch_update() -> dict[str, Any]:
-    check = check_for_update()
-    if not check.ok:
-        return check.to_dict()
-    if not check.update_available:
-        payload = check.to_dict()
-        payload["ok"] = False
-        payload["error"] = "Whisperer is already up to date."
-        return payload
-    if not check.asset:
-        payload = check.to_dict()
-        payload["ok"] = False
-        payload["error"] = "The latest release does not include a Windows installer asset."
-        return payload
+def _emit(progress_callback: ProgressCallback | None, **payload: Any) -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(payload)
+    except Exception:
+        pass
 
+
+def _update_target_dir() -> str:
     target_dir = os.path.join(tempfile.gettempdir(), "WhispererUpdates")
     os.makedirs(target_dir, exist_ok=True)
-    target = os.path.join(target_dir, check.asset.name)
-    req = urllib.request.Request(check.asset.url, headers={"User-Agent": f"Whisperer/{config.VERSION}"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as handle:
-            while True:
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                handle.write(chunk)
-    except Exception as exc:
-        payload = check.to_dict()
-        payload["ok"] = False
-        payload["error"] = f"Could not download the update: {exc}"
-        return payload
+    return target_dir
 
+
+def _validate_downloaded_installer_path(path: str) -> str:
+    target_dir = os.path.abspath(_update_target_dir())
+    candidate = os.path.abspath(path)
+    if os.path.dirname(candidate).lower() != target_dir.lower():
+        raise ValueError("Installer path is outside the update download folder.")
+    if not INSTALLER_NAME_RE.match(os.path.basename(candidate)):
+        raise ValueError("Installer file name does not look like a Whisperer setup package.")
+    if not os.path.exists(candidate):
+        raise FileNotFoundError(candidate)
+    return candidate
+
+
+def _launch_installer(target: str, check: UpdateCheck | None = None, *, allow_unsigned: bool = False) -> dict[str, Any]:
+    target = _validate_downloaded_installer_path(target)
     downloaded_hash = _sha256(target)
     signature_status = _authenticode_status(target)
-    if signature_status != "Valid" and os.environ.get(ALLOW_UNSIGNED_UPDATE_ENV) != "1":
-        try:
-            os.remove(target)
-        except OSError:
-            pass
-        payload = check.to_dict()
+    if signature_status != "Valid" and not allow_unsigned and os.environ.get(ALLOW_UNSIGNED_UPDATE_ENV) != "1":
+        payload = check.to_dict() if check else {"ok": False, "currentVersion": config.VERSION}
         payload["ok"] = False
         payload["sha256"] = downloaded_hash
         payload["signatureStatus"] = signature_status
+        payload["installerPath"] = target
+        payload["unsignedBlocked"] = True
         payload["error"] = (
             "The downloaded installer is not signed by a trusted publisher. "
-            "Open the GitHub release manually, or install a signed release."
+            "Install it anyway?"
         )
         return payload
 
     try:
-        setup_log = os.path.join(tempfile.gettempdir(), "WhispererUpdates", "installer-update.log")
+        setup_log = os.path.join(_update_target_dir(), "installer-update.log")
         subprocess.Popen([target, f"/LOG={setup_log}"], cwd=os.path.dirname(target), close_fds=True)
     except Exception as exc:
-        payload = check.to_dict()
+        payload = check.to_dict() if check else {"ok": False, "currentVersion": config.VERSION}
         payload["ok"] = False
         payload["error"] = f"Could not launch the installer: {exc}"
         return payload
 
-    payload = check.to_dict()
+    payload = check.to_dict() if check else {"currentVersion": config.VERSION}
     payload["ok"] = True
     payload["installerPath"] = target
     payload["sha256"] = downloaded_hash
     payload["signatureStatus"] = signature_status
     payload["shouldCloseApp"] = True
     payload["pythonExecutable"] = sys.executable
+    return payload
+
+
+def launch_downloaded_update(installer_path: str, *, allow_unsigned: bool = False) -> dict[str, Any]:
+    return _launch_installer(installer_path, allow_unsigned=allow_unsigned)
+
+
+def download_and_launch_update(progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
+    _emit(progress_callback, phase="checking", percent=0, message="Checking GitHub releases...")
+    check = check_for_update()
+    if not check.ok:
+        _emit(progress_callback, phase="error", percent=0, message=check.error)
+        return check.to_dict()
+    if not check.update_available:
+        payload = check.to_dict()
+        payload["ok"] = False
+        payload["error"] = "Whisperer is already up to date."
+        _emit(progress_callback, phase="error", percent=0, message=payload["error"])
+        return payload
+    if not check.asset:
+        payload = check.to_dict()
+        payload["ok"] = False
+        payload["error"] = "The latest release does not include a Windows installer asset."
+        _emit(progress_callback, phase="error", percent=0, message=payload["error"])
+        return payload
+
+    target_dir = _update_target_dir()
+    target = os.path.join(target_dir, check.asset.name)
+    req = urllib.request.Request(check.asset.url, headers={"User-Agent": f"Whisperer/{config.VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as handle:
+            total = int(resp.headers.get("Content-Length") or check.asset.size or 0)
+            downloaded = 0
+            _emit(
+                progress_callback,
+                phase="downloading",
+                percent=1,
+                downloadedBytes=0,
+                totalBytes=total,
+                message=f"Downloading {check.asset.name}...",
+            )
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded += len(chunk)
+                percent = int(downloaded * 100 / total) if total > 0 else 0
+                _emit(
+                    progress_callback,
+                    phase="downloading",
+                    percent=max(1, min(99, percent)) if total > 0 else 0,
+                    downloadedBytes=downloaded,
+                    totalBytes=total,
+                    message="Downloading update...",
+                )
+    except Exception as exc:
+        payload = check.to_dict()
+        payload["ok"] = False
+        payload["error"] = f"Could not download the update: {exc}"
+        _emit(progress_callback, phase="error", percent=0, message=payload["error"])
+        return payload
+
+    _emit(progress_callback, phase="verifying", percent=100, message="Verifying installer...")
+    payload = _launch_installer(target, check, allow_unsigned=False)
+    if payload.get("unsignedBlocked"):
+        _emit(
+            progress_callback,
+            phase="unsignedBlocked",
+            percent=100,
+            message=payload.get("error", ""),
+            payload=payload,
+        )
+    elif payload.get("ok"):
+        _emit(progress_callback, phase="installing", percent=100, message="Installer launched.", payload=payload)
+    else:
+        _emit(progress_callback, phase="error", percent=100, message=payload.get("error", "Could not install update."), payload=payload)
     return payload

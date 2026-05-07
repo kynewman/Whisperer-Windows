@@ -41,6 +41,13 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.9
+
+Whisperer 6.0.9 improves the in-app updater for unsigned public builds. The
+Configuration update flow now shows download progress, verifies the installer,
+and asks before launching an unsigned setup package instead of forcing users to
+open the GitHub release manually. Signed installers still launch directly.
+
 ## Version 6.0.8
 
 Whisperer 6.0.8 fixes a first-run microphone selection issue found while

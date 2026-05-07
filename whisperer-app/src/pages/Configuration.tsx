@@ -5,6 +5,7 @@ import type { AppSettings, Tweaks } from "../App";
 
 type UpdateInfo = {
   ok?: boolean;
+  started?: boolean;
   currentVersion?: string;
   latestVersion?: string;
   updateAvailable?: boolean;
@@ -15,6 +16,19 @@ type UpdateInfo = {
   asset?: { name?: string; size?: number };
   error?: string;
   shouldCloseApp?: boolean;
+  installerPath?: string;
+  signatureStatus?: string;
+  sha256?: string;
+  unsignedBlocked?: boolean;
+};
+
+type UpdateProgress = {
+  phase?: string;
+  percent?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+  payload?: UpdateInfo;
 };
 
 type BenchmarkItem = {
@@ -82,6 +96,8 @@ export default function ConfigPage({
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [pendingUnsignedInstaller, setPendingUnsignedInstaller] = useState("");
   const [benchmarkStatus, setBenchmarkStatus] = useState("");
   const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkItem[]>([]);
   const [benchmarkAudioMs, setBenchmarkAudioMs] = useState<number | null>(null);
@@ -311,6 +327,47 @@ export default function ConfigPage({
     }
   };
 
+  const parseUpdateProgress = (payload: string): UpdateProgress => {
+    try {
+      return JSON.parse(payload) as UpdateProgress;
+    } catch {
+      return { phase: "error", message: "Update progress returned an unreadable response." };
+    }
+  };
+
+  useEffect(() => {
+    const onProgress = (event: Event) => {
+      const progress = parseUpdateProgress((event as CustomEvent<string>).detail || "");
+      if (typeof progress.percent === "number") {
+        setUpdateProgress({ ...progress, percent: Math.max(0, Math.min(100, progress.percent)) });
+      } else {
+        setUpdateProgress(progress);
+      }
+      const payload = progress.payload;
+      if (payload) setUpdateInfo(payload);
+      if (progress.message) setUpdateStatus(progress.message);
+      if (progress.phase === "downloading") setUpdateStatus(progress.message || "Downloading update...");
+      if (progress.phase === "verifying") setUpdateStatus("Verifying installer...");
+      if (progress.phase === "installing") setUpdateStatus(progress.message || "Launching installer...");
+      if (progress.phase === "unsignedBlocked" || payload?.unsignedBlocked) {
+        const path = payload?.installerPath || "";
+        setPendingUnsignedInstaller(path);
+        setInstallingUpdate(false);
+        setUpdateStatus("The downloaded installer is unsigned. Install it anyway?");
+      }
+      if ((progress.phase === "error" || payload?.error) && !payload?.unsignedBlocked) {
+        setInstallingUpdate(false);
+        setUpdateStatus(payload?.error || progress.message || "Could not install update.");
+      }
+      if (payload?.ok && payload.shouldCloseApp) {
+        setPendingUnsignedInstaller("");
+        setUpdateStatus("Installer launched. Whisperer will close so the update can finish.");
+      }
+    };
+    window.addEventListener("whisperer:updateProgress", onProgress as EventListener);
+    return () => window.removeEventListener("whisperer:updateProgress", onProgress as EventListener);
+  }, []);
+
   const checkUpdates = () => {
     if (!window.whisperer?.checkForUpdates) {
       setUpdateStatus("Update checks are not available in this build.");
@@ -333,14 +390,14 @@ export default function ConfigPage({
   const installUpdate = () => {
     if (!window.whisperer?.installUpdate) return;
     setInstallingUpdate(true);
+    setPendingUnsignedInstaller("");
+    setUpdateProgress({ phase: "starting", percent: 0, message: "Starting update..." });
     setUpdateStatus("Downloading update...");
     window.whisperer.installUpdate()
       .then((payload) => {
         const info = parseUpdateInfo(payload);
-        setUpdateInfo(info);
-        if (info.ok) {
-          setUpdateStatus("Installer launched. Whisperer will close so the update can finish.");
-        } else {
+        if (!info.started && !info.ok) {
+          setUpdateInfo(info);
           setUpdateStatus(info.error || "Could not install update.");
           setInstallingUpdate(false);
         }
@@ -351,7 +408,36 @@ export default function ConfigPage({
       });
   };
 
+  const continueUnsignedUpdate = () => {
+    if (!pendingUnsignedInstaller || !window.whisperer?.continueUnsignedUpdate) return;
+    setInstallingUpdate(true);
+    setUpdateProgress({ phase: "installing", percent: 100, message: "Launching unsigned installer..." });
+    setUpdateStatus("Launching unsigned installer...");
+    window.whisperer.continueUnsignedUpdate(pendingUnsignedInstaller)
+      .then((payload) => {
+        const info = parseUpdateInfo(payload);
+        if (!info.started && !info.ok) {
+          setUpdateInfo(info);
+          setUpdateStatus(info.error || "Could not launch installer.");
+          setInstallingUpdate(false);
+        }
+      })
+      .catch(() => {
+        setUpdateStatus("Could not launch installer.");
+        setInstallingUpdate(false);
+      });
+  };
+
+  const cancelUnsignedUpdate = () => {
+    setPendingUnsignedInstaller("");
+    setInstallingUpdate(false);
+    setUpdateStatus("Update cancelled.");
+    setUpdateProgress(null);
+  };
+
   const releaseNote = updateInfo?.body?.split("\n").find((line) => line.trim())?.trim();
+  const progressPercent = typeof updateProgress?.percent === "number" ? Math.max(0, Math.min(100, updateProgress.percent)) : null;
+  const progressIndeterminate = installingUpdate && (progressPercent === null || updateProgress?.phase === "installing");
 
   return (
     <div className="page-enter scroll page-shell">
@@ -397,15 +483,61 @@ export default function ConfigPage({
                 disabled={!updateInfo?.updateAvailable || checkingUpdates || installingUpdate}
                 icon="play"
               >
-                {installingUpdate ? "Downloading" : "Update"}
+                {installingUpdate ? "Working" : "Update"}
               </Btn>
             </div>
           }
-          divider={Boolean(updateStatus || releaseNote || updateInfo?.asset?.name)}
+          divider={Boolean(updateStatus || releaseNote || updateInfo?.asset?.name || updateProgress || pendingUnsignedInstaller)}
         />
-        {(updateStatus || releaseNote || updateInfo?.asset?.name) && (
+        {(updateStatus || releaseNote || updateInfo?.asset?.name || updateProgress || pendingUnsignedInstaller) && (
           <div style={{ paddingTop: 12, display: "grid", gap: 8 }}>
-            {updateStatus && <div style={{ fontSize: 13, color: updateInfo?.error ? "var(--rec)" : "var(--ink-2)" }}>{updateStatus}</div>}
+            {updateStatus && <div style={{ fontSize: 13, color: updateInfo?.error && !updateInfo?.unsignedBlocked ? "var(--rec)" : "var(--ink-2)" }}>{updateStatus}</div>}
+            {updateProgress && (
+              <div style={{ display: "grid", gap: 6 }}>
+                <div
+                  style={{
+                    height: 7,
+                    borderRadius: 999,
+                    background: "var(--bg-sunken)",
+                    overflow: "hidden",
+                    border: "1px solid var(--line-soft)",
+                  }}
+                >
+                  <div
+                    className={`update-progress-fill${progressIndeterminate ? " is-indeterminate" : ""}`}
+                    style={{
+                      width: progressIndeterminate ? "42%" : `${progressPercent ?? 0}%`,
+                      height: "100%",
+                      borderRadius: 999,
+                      background: "var(--accent)",
+                      transition: "width 180ms ease",
+                      opacity: progressIndeterminate ? 0.72 : 1,
+                      willChange: progressIndeterminate ? "transform" : "auto",
+                    }}
+                  />
+                </div>
+                {(typeof updateProgress.downloadedBytes === "number" && typeof updateProgress.totalBytes === "number" && updateProgress.totalBytes > 0) && (
+                  <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
+                    {(updateProgress.downloadedBytes / 1048576).toFixed(1)} MB / {(updateProgress.totalBytes / 1048576).toFixed(1)} MB
+                  </div>
+                )}
+              </div>
+            )}
+            {pendingUnsignedInstaller && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <Btn size="sm" variant="accent" icon="play" onClick={continueUnsignedUpdate} disabled={installingUpdate}>
+                  Yes, install
+                </Btn>
+                <Btn size="sm" variant="secondary" onClick={cancelUnsignedUpdate} disabled={installingUpdate}>
+                  No
+                </Btn>
+                {updateInfo?.signatureStatus && (
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
+                    signature: {updateInfo.signatureStatus}
+                  </span>
+                )}
+              </div>
+            )}
             {releaseNote && <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.45 }}>{releaseNote}</div>}
             {updateInfo?.asset?.name && (
               <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
