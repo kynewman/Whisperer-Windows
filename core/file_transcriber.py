@@ -1,20 +1,18 @@
-"""File transcription workflow using ffmpeg and the existing pipeline."""
+"""Headless file transcription using ffmpeg and the normal text pipeline."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
-from core.transcriber import transcribe
-from core.formatter import format_transcription
 from core.dictionary import apply_replacements, get_prompt_words
-from core.modes import get_mode
-from core.history import save_dictation, save_context
+from core.formatter import format_transcription
+from core.history import save_dictation
+from core.transcriber import transcribe
 
 
 SUPPORTED_EXTENSIONS = {
@@ -36,12 +34,13 @@ def is_supported(path: str) -> bool:
 
 
 def extract_audio(input_path: str) -> np.ndarray:
-    """
-    Use ffmpeg to extract audio as 16 kHz mono float32.
-    Returns a 1-D numpy array.
-    """
-    cmd = [
+    """Extract 16 kHz mono float32 PCM with ffmpeg."""
+    command = [
         "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
         "-y",
         "-i",
         input_path,
@@ -53,11 +52,12 @@ def extract_audio(input_path: str) -> np.ndarray:
         "f32le",
         "pipe:1",
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='ignore')[:200]}")
+        detail = result.stderr.decode("utf-8", errors="ignore")[:400].strip()
+        raise RuntimeError(f"ffmpeg failed: {detail}")
     audio = np.frombuffer(result.stdout, dtype=np.float32)
-    if len(audio) == 0:
+    if audio.size == 0:
         raise RuntimeError("ffmpeg produced no audio output")
     return audio
 
@@ -67,47 +67,28 @@ def transcribe_file(
     mode_id: int | None = None,
     progress_callback: Callable[[float], None] | None = None,
 ) -> dict:
-    """
-    Run the full file transcription pipeline.
-
-    Returns a dict with:
-        dictation_id, raw_transcript, final_text, duration_s, mode_id, error
-    """
     path = Path(input_path)
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {path.suffix}")
 
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
-    t0 = time.time()
-
     if progress_callback:
         progress_callback(0.05)
 
-    audio = extract_audio(input_path)
-    duration_s = len(audio) / 16000.0
-
+    audio = extract_audio(str(path))
+    duration_s = audio.size / 16000.0
     if progress_callback:
         progress_callback(0.15)
 
-    mode = get_mode(mode_id) if mode_id else None
-    vocab_hints = get_prompt_words(80)
-
-    raw_text = transcribe(audio, context_words=vocab_hints)
-
+    raw_text = transcribe(audio, context_words=get_prompt_words(80))
     if progress_callback:
         progress_callback(0.70)
 
-    formatted = format_transcription(
-        raw_text,
-        active_app=path.suffix.lower(),
-        window_title=path.name,
-    )
-    final_text = apply_replacements(formatted)
-
+    final_text = apply_replacements(format_transcription(raw_text, active_app=path.suffix.lower(), window_title=path.name))
     if progress_callback:
         progress_callback(0.85)
 
-    did = save_dictation(
+    dictation_id = save_dictation(
         started_at=started_at,
         duration_ms=int(duration_s * 1000),
         app_name=path.name,
@@ -119,12 +100,10 @@ def transcribe_file(
         final_text=final_text,
         replacements_applied=1,
     )
-
     if progress_callback:
         progress_callback(1.0)
-
     return {
-        "dictation_id": did,
+        "dictation_id": dictation_id,
         "raw_transcript": raw_text,
         "final_text": final_text,
         "duration_s": duration_s,

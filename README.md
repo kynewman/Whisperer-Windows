@@ -7,7 +7,7 @@ native overlay for hotkey dictation feedback.
 ## Quick Start
 
 ```powershell
-cd "Q:\Whisperer Windows"
+cd "Q:\Whisperer Public Release"
 .\Launch Whisperer.bat
 ```
 
@@ -27,7 +27,7 @@ The current PyInstaller build uses `whisperer.spec` and embeds the built React
 dashboard from `whisperer-app/dist`.
 
 ```powershell
-cd "Q:\Whisperer Windows"
+cd "Q:\Whisperer Public Release"
 npm --prefix whisperer-app install
 npm --prefix whisperer-app run build
 pyinstaller --noconfirm whisperer.spec
@@ -40,6 +40,14 @@ To build the optional installer after PyInstaller finishes:
 ```powershell
 iscc installer.iss
 ```
+
+## Version 6.0.10
+
+Whisperer 6.0.10 promotes the rewrite experiment into the public release. It
+adds provider-specific speech model lists for Groq and NVIDIA, trims weaker
+Parakeet choices, labels the device selector as Speech Engine, adds model
+characteristics in the dropdown, applies bundled engine model arguments
+correctly, and fixes trailing comma punctuation normalization in transcripts.
 
 ## Version 6.0.9
 

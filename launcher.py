@@ -246,7 +246,12 @@ if "--engine" in sys.argv:
     sys.argv = [sys.argv[0], *args]
     _LOG.info("entering bundled engine mode argv=%r", sys.argv)
     try:
-        importlib.import_module("main").WhisperApp().run()
+        main_module = importlib.import_module("main")
+        model_arg = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--model=")), "")
+        if model_arg:
+            main_module.config.WHISPER_MODEL_SIZE = model_arg
+            _LOG.info("bundled engine model arg applied model=%s", model_arg)
+        main_module.WhisperApp().run()
     except Exception:
         _LOG.exception("bundled engine mode failed")
         raise

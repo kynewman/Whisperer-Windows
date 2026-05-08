@@ -1,11 +1,13 @@
-"""Persistent app settings."""
+"""Persistent application settings."""
 
 from __future__ import annotations
 
 import copy
 import json
 import os
-from typing import Any
+import threading
+from pathlib import Path
+from typing import Any, Mapping
 
 from core.diagnostics import append_log_line
 from core.paths import get_app_data_dir
@@ -123,47 +125,54 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+_SAVE_LOCK = threading.RLock()
+
+
 def get_settings_path() -> str:
-    return os.path.join(get_app_data_dir(), "settings.json")
+    return str(Path(get_app_data_dir()) / "settings.json")
 
 
-def _merge_defaults(value: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(defaults)
+def _merge_defaults(value: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(defaults))
     for key, item in value.items():
-        if isinstance(item, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_defaults(item, merged[key])
+        existing = merged.get(key)
+        if isinstance(item, Mapping) and isinstance(existing, Mapping):
+            merged[key] = _merge_defaults(item, existing)
         else:
-            merged[key] = item
+            merged[key] = copy.deepcopy(item)
     return merged
 
 
 def load_settings() -> dict[str, Any]:
-    path = get_settings_path()
-    if not os.path.exists(path):
-        save_settings(DEFAULT_SETTINGS)
-        return copy.deepcopy(DEFAULT_SETTINGS)
+    path = Path(get_settings_path())
+    if not path.exists():
+        settings = copy.deepcopy(DEFAULT_SETTINGS)
+        save_settings(settings)
+        return settings
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        append_log_line("settings.log", f"settings load fallback path={path!r} error={exc!r}")
+        append_log_line("settings.log", f"settings load fallback path={str(path)!r} error={exc!r}")
         return copy.deepcopy(DEFAULT_SETTINGS)
 
     if not isinstance(loaded, dict):
-        append_log_line("settings.log", f"settings load fallback path={path!r} error='root is not an object'")
+        append_log_line("settings.log", f"settings load fallback path={str(path)!r} error='root is not an object'")
         return copy.deepcopy(DEFAULT_SETTINGS)
     return _merge_defaults(loaded, DEFAULT_SETTINGS)
 
 
-def save_settings(settings: dict[str, Any]):
-    path = get_settings_path()
-    tmp_path = f"{path}.tmp"
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
-        os.replace(tmp_path, path)
-    except OSError as exc:
-        append_log_line("settings.log", f"settings save failed path={path!r} error={exc!r}")
+def save_settings(settings: dict[str, Any]) -> None:
+    path = Path(get_settings_path())
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with _SAVE_LOCK:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            os.replace(tmp_path, path)
+        except OSError as exc:
+            append_log_line("settings.log", f"settings save failed path={str(path)!r} error={exc!r}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass

@@ -1,15 +1,15 @@
-"""Mode profiles and auto-activation rules."""
+"""Mode profiles and foreground-window auto-activation rules."""
 
 from __future__ import annotations
 
 import dataclasses
 import sqlite3
-from typing import List
+from typing import Any
 
 from core.migrations import get_connection
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Mode:
     id: int | None = None
     name: str = ""
@@ -36,7 +36,7 @@ class Mode:
     def from_row(cls, row: sqlite3.Row) -> "Mode":
         return cls(
             id=row["id"],
-            name=row["name"],
+            name=row["name"] or "",
             is_builtin=bool(row["is_builtin"]),
             description=row["description"] or "",
             stt_provider=row["stt_provider"],
@@ -58,7 +58,7 @@ class Mode:
         )
 
 
-BUILTIN_MODES: list[dict] = [
+BUILTIN_MODES: list[dict[str, str]] = [
     {"name": "Voice", "description": "Raw transcription with minimal formatting.", "formatting_prompt": "", "output_format": "plain"},
     {"name": "Message", "description": "Clean up dictated message for chat apps.", "formatting_prompt": "Clean up the following dictated message for sending in a chat app. Keep it conversational and concise.", "output_format": "plain"},
     {"name": "Email", "description": "Polished professional email body.", "formatting_prompt": "Rewrite the following dictated text as a polished professional email body. Preserve the meaning exactly.", "output_format": "plain"},
@@ -70,25 +70,54 @@ BUILTIN_MODES: list[dict] = [
     {"name": "Custom", "description": "User-defined mode.", "formatting_prompt": "", "output_format": "plain"},
 ]
 
+_BOOL_FIELDS = {"llm_enabled", "auto_send", "ctx_ocr", "ctx_selected_text", "ctx_clipboard", "enabled"}
+_MODE_FIELDS = {
+    "name",
+    "description",
+    "stt_provider",
+    "stt_model",
+    "language",
+    "formatting_prompt",
+    "output_format",
+    "llm_enabled",
+    "llm_provider",
+    "llm_model",
+    "llm_prompt",
+    "paste_method",
+    "auto_send",
+    "ctx_ocr",
+    "ctx_selected_text",
+    "ctx_clipboard",
+    "enabled",
+}
 
-def seed_builtins():
-    """Insert built-in modes if they do not already exist."""
+
+def _coerce_field(name: str, value: Any) -> Any:
+    if name in _BOOL_FIELDS:
+        return int(bool(value))
+    return value
+
+
+def seed_builtins() -> None:
+    """Insert built-in modes while respecting deleted built-in tombstones."""
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM deleted_builtin_modes")
-    deleted_builtins = {str(row["name"]).lower() for row in cursor.fetchall()}
-    for data in BUILTIN_MODES:
-        if data["name"].lower() in deleted_builtins:
-            continue
-        cursor.execute("SELECT id FROM modes WHERE name = ?", (data["name"],))
-        if cursor.fetchone() is None:
-            cursor.execute("""
-                INSERT INTO modes
-                    (name, is_builtin, description, formatting_prompt, output_format, enabled)
+    try:
+        cursor = conn.cursor()
+        deleted = {str(row["name"]).lower() for row in cursor.execute("SELECT name FROM deleted_builtin_modes")}
+        for item in BUILTIN_MODES:
+            if item["name"].lower() in deleted:
+                continue
+            cursor.execute(
+                """
+                INSERT INTO modes (name, is_builtin, description, formatting_prompt, output_format, enabled)
                 VALUES (?, 1, ?, ?, ?, 1)
-            """, (data["name"], data["description"], data["formatting_prompt"], data["output_format"]))
-    conn.commit()
-    conn.close()
+                ON CONFLICT(name) DO NOTHING
+                """,
+                (item["name"], item["description"], item["formatting_prompt"], item["output_format"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def add_mode(
@@ -107,159 +136,178 @@ def add_mode(
     ctx_clipboard: bool = False,
 ) -> int:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO modes
-            (name, description, formatting_prompt, output_format,
-             llm_enabled, llm_provider, llm_model, llm_prompt,
-             paste_method, auto_send, ctx_ocr, ctx_selected_text, ctx_clipboard)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        name, description, formatting_prompt, output_format,
-        int(llm_enabled), llm_provider, llm_model, llm_prompt,
-        paste_method, int(auto_send), int(ctx_ocr), int(ctx_selected_text), int(ctx_clipboard),
-    ))
-    mode_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return mode_id
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO modes
+                (name, description, formatting_prompt, output_format,
+                 llm_enabled, llm_provider, llm_model, llm_prompt,
+                 paste_method, auto_send, ctx_ocr, ctx_selected_text, ctx_clipboard)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                description,
+                formatting_prompt,
+                output_format,
+                int(llm_enabled),
+                llm_provider,
+                llm_model,
+                llm_prompt,
+                paste_method,
+                int(auto_send),
+                int(ctx_ocr),
+                int(ctx_selected_text),
+                int(ctx_clipboard),
+            ),
+        )
+        mode_id = int(cursor.lastrowid)
+        conn.commit()
+        return mode_id
+    finally:
+        conn.close()
 
 
-def list_modes(enabled_only: bool = False) -> List[Mode]:
+def list_modes(enabled_only: bool = False) -> list[Mode]:
     conn = get_connection()
-    cursor = conn.cursor()
-    query = "SELECT * FROM modes"
-    if enabled_only:
-        query += " WHERE enabled = 1"
-    query += " ORDER BY is_builtin DESC, name ASC"
-    cursor.execute(query)
-    rows = [Mode.from_row(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
+    try:
+        query = "SELECT * FROM modes"
+        params: tuple[Any, ...] = ()
+        if enabled_only:
+            query += " WHERE enabled = ?"
+            params = (1,)
+        query += " ORDER BY is_builtin DESC, name ASC"
+        return [Mode.from_row(row) for row in conn.execute(query, params)]
+    finally:
+        conn.close()
 
 
 def get_mode(mode_id: int) -> Mode | None:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM modes WHERE id = ?", (mode_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return Mode.from_row(row) if row else None
+    try:
+        row = conn.execute("SELECT * FROM modes WHERE id = ?", (mode_id,)).fetchone()
+        return Mode.from_row(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_mode_by_name(name: str) -> Mode | None:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM modes WHERE name = ?", (name,))
-    row = cursor.fetchone()
-    conn.close()
-    return Mode.from_row(row) if row else None
+    try:
+        row = conn.execute("SELECT * FROM modes WHERE name = ?", (name,)).fetchone()
+        return Mode.from_row(row) if row else None
+    finally:
+        conn.close()
 
 
-def update_mode(mode_id: int, **kwargs) -> bool:
-    allowed = {
-        "name", "description", "stt_provider", "stt_model", "language",
-        "formatting_prompt", "output_format", "llm_enabled", "llm_provider",
-        "llm_model", "llm_prompt", "paste_method", "auto_send",
-        "ctx_ocr", "ctx_selected_text", "ctx_clipboard", "enabled",
-    }
-    fields = {k: v for k, v in kwargs.items() if k in allowed}
+def update_mode(mode_id: int, **kwargs: Any) -> bool:
+    fields = {key: _coerce_field(key, value) for key, value in kwargs.items() if key in _MODE_FIELDS}
     if not fields:
         return False
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values())
-    # Convert booleans to int for SQLite
-    for idx, key in enumerate(fields.keys()):
-        if isinstance(values[idx], bool):
-            values[idx] = int(values[idx])
-    values.append(mode_id)
+    assignments = ", ".join(f"{key} = ?" for key in fields)
+    values = [*fields.values(), int(mode_id)]
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"UPDATE modes SET {set_clause} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
-    return True
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE modes SET {assignments} WHERE id = ?", values)
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
 
 
 def delete_mode(mode_id: int) -> bool:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name, is_builtin FROM modes WHERE id = ?", (mode_id,))
-    row = cursor.fetchone()
-    if row is None:
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("SELECT name, is_builtin FROM modes WHERE id = ?", (mode_id,)).fetchone()
+        if row is None:
+            return False
+        if row["is_builtin"]:
+            cursor.execute(
+                """
+                INSERT INTO deleted_builtin_modes (name, deleted_at)
+                VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(name) DO UPDATE SET deleted_at = CURRENT_TIMESTAMP
+                """,
+                (row["name"],),
+            )
+        cursor.execute("DELETE FROM auto_activation_rules WHERE mode_id = ?", (mode_id,))
+        cursor.execute("DELETE FROM modes WHERE id = ?", (mode_id,))
+        conn.commit()
+        return True
+    finally:
         conn.close()
-        return False
-    if row["is_builtin"]:
-        cursor.execute("""
-            INSERT INTO deleted_builtin_modes (name, deleted_at)
-            VALUES (?, CURRENT_TIMESTAMP)
-            ON CONFLICT(name) DO UPDATE SET deleted_at = CURRENT_TIMESTAMP
-        """, (row["name"],))
-    cursor.execute("DELETE FROM auto_activation_rules WHERE mode_id = ?", (mode_id,))
-    cursor.execute("DELETE FROM modes WHERE id = ?", (mode_id,))
-    conn.commit()
-    conn.close()
-    return True
 
 
 def add_auto_rule(mode_id: int, match_type: str, match_value: str, priority: int = 0, enabled: bool = True) -> int:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO auto_activation_rules (mode_id, match_type, match_value, priority, enabled)
-        VALUES (?, ?, ?, ?, ?)
-    """, (mode_id, match_type, match_value, priority, int(enabled)))
-    rule_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return rule_id
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO auto_activation_rules (mode_id, match_type, match_value, priority, enabled)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (int(mode_id), match_type, match_value, int(priority), int(enabled)),
+        )
+        rule_id = int(cursor.lastrowid)
+        conn.commit()
+        return rule_id
+    finally:
+        conn.close()
 
 
-def list_auto_rules(mode_id: int | None = None) -> List[dict]:
+def list_auto_rules(mode_id: int | None = None) -> list[dict[str, Any]]:
     conn = get_connection()
-    cursor = conn.cursor()
-    if mode_id is not None:
-        cursor.execute("""
-            SELECT * FROM auto_activation_rules WHERE mode_id = ? ORDER BY priority DESC, id ASC
-        """, (mode_id,))
-    else:
-        cursor.execute("SELECT * FROM auto_activation_rules ORDER BY priority DESC, id ASC")
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
+    try:
+        if mode_id is None:
+            rows = conn.execute("SELECT * FROM auto_activation_rules ORDER BY priority DESC, id ASC")
+        else:
+            rows = conn.execute(
+                "SELECT * FROM auto_activation_rules WHERE mode_id = ? ORDER BY priority DESC, id ASC",
+                (int(mode_id),),
+            )
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
 
 
-def delete_auto_rule(rule_id: int):
+def delete_auto_rule(rule_id: int) -> None:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM auto_activation_rules WHERE id = ?", (rule_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("DELETE FROM auto_activation_rules WHERE id = ?", (int(rule_id),))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def resolve_active_mode(active_app: str = "", window_title: str = "") -> Mode:
-    """Return the mode that matches the current foreground app, or Voice as fallback."""
+    """Return the first enabled mode matching the active app/title."""
+    app = (active_app or "").lower()
+    title = (window_title or "").lower()
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT m.*, r.match_type, r.match_value
-        FROM modes m
-        JOIN auto_activation_rules r ON r.mode_id = m.id
-        WHERE r.enabled = 1 AND m.enabled = 1
-        ORDER BY r.priority DESC, r.id ASC
-    """)
-    for row in cursor.fetchall():
-        match_type = row["match_type"]
-        match_value = row["match_value"].lower()
-        if match_type == "process" and match_value in active_app.lower():
-            conn.close()
-            return Mode.from_row(row)
-        if match_type == "window_title" and match_value in window_title.lower():
-            conn.close()
-            return Mode.from_row(row)
-        if match_type == "exe_path" and match_value in active_app.lower():
-            conn.close()
-            return Mode.from_row(row)
-    conn.close()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.*, r.match_type, r.match_value
+            FROM modes m
+            JOIN auto_activation_rules r ON r.mode_id = m.id
+            WHERE r.enabled = 1 AND m.enabled = 1
+            ORDER BY r.priority DESC, r.id ASC
+            """
+        )
+        for row in rows:
+            match_type = str(row["match_type"] or "")
+            value = str(row["match_value"] or "").lower()
+            if match_type == "process" and value in app:
+                return Mode.from_row(row)
+            if match_type == "window_title" and value in title:
+                return Mode.from_row(row)
+            if match_type == "exe_path" and value in app:
+                return Mode.from_row(row)
+    finally:
+        conn.close()
     fallback = get_mode_by_name("Voice")
     return fallback if fallback else Mode(name="Voice")

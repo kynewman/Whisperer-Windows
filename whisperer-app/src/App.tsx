@@ -99,6 +99,7 @@ export interface AppSnapshot {
   engineState?: EngineState;
   settings?: AppSettings;
   models?: BridgeOption[];
+  allModels?: BridgeOption[];
   gpus?: BridgeOption[];
   microphones?: MicOption[];
   inputChannels?: BridgeOption[];
@@ -125,14 +126,24 @@ const DEFAULT_TWEAKS: Tweaks = {
 };
 
 const DEFAULT_MODELS: BridgeOption[] = [
-  { value: "nvidia/parakeet-tdt-0.6b-v2", label: "NVIDIA Parakeet TDT 0.6B RNNT streaming" },
-  { value: "nvidia/parakeet-ctc-0.6b", label: "NVIDIA Parakeet CTC 0.6B (RNNT streaming)" },
-  { value: "nvidia/parakeet-unified-en-0.6b", label: "NVIDIA Parakeet Unified 0.6B (RNNT streaming)" },
-  { value: "deepdml/faster-whisper-large-v3-turbo-ct2", label: "Whisper v3 Turbo" },
-  { value: "large-v3", label: "Whisper Large v3" },
+  { value: "nvidia/parakeet-tdt-0.6b-v2", label: "NVIDIA Parakeet TDT 0.6B v2", hint: "Fast" },
+  { value: "nvidia/parakeet-tdt-0.6b-v3", label: "NVIDIA Parakeet TDT 0.6B v3", hint: "Newer" },
+  { value: "nvidia/parakeet-ctc-1.1b-asr", label: "NVIDIA Parakeet CTC 1.1B", hint: "Accurate" },
+  { value: "nvidia/parakeet-1.1b-rnnt-multilingual-asr", label: "NVIDIA Parakeet RNNT 1.1B Multilingual", hint: "Streaming" },
+  { value: "whisper-large-v3-turbo", label: "Groq Whisper Large v3 Turbo", hint: "Fast" },
+  { value: "whisper-large-v3", label: "Groq Whisper Large v3", hint: "Accurate" },
+  { value: "deepdml/faster-whisper-large-v3-turbo-ct2", label: "Whisper v3 Turbo", hint: "Balanced" },
+  { value: "large-v3", label: "Whisper Large v3", hint: "Accurate" },
 ];
 
 const API_GPU_VALUES = new Set(["groq_api", "grok_api", "nvidia_api"]);
+const NVIDIA_MODEL_VALUES = new Set([
+  "nvidia/parakeet-tdt-0.6b-v2",
+  "nvidia/parakeet-tdt-0.6b-v3",
+  "nvidia/parakeet-ctc-1.1b-asr",
+  "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+]);
+const GROQ_MODEL_VALUES = new Set(["whisper-large-v3-turbo", "whisper-large-v3"]);
 const DEFAULT_GPUS: BridgeOption[] = [
   { value: "nvidia_api", label: "NVIDIA API Parakeet" },
   { value: "groq_api", label: "Groq API (Whisper)" },
@@ -257,9 +268,10 @@ function parseSnapshot(raw: string | AppSnapshot | undefined): AppSnapshot | nul
 export default function App() {
   const [activePage, setActivePage] = useState<NavKey>("home");
   const [engineState, setEngineState] = useState<EngineState>("stopped");
-  const [version, setVersion] = useState("6.0.9");
+  const [version, setVersion] = useState("6.0.10");
   const [settings, setSettings] = useState<AppSettings>({});
   const [models, setModels] = useState<BridgeOption[]>(DEFAULT_MODELS);
+  const [allModels, setAllModels] = useState<BridgeOption[]>(DEFAULT_MODELS);
   const [gpus, setGpus] = useState<BridgeOption[]>(DEFAULT_GPUS);
   const [microphones, setMicrophones] = useState<MicOption[]>(DEFAULT_MICROPHONES);
   const [inputChannels, setInputChannels] = useState<BridgeOption[]>(DEFAULT_CHANNELS);
@@ -294,6 +306,7 @@ export default function App() {
       setTweaks((current) => normalizeUiTweaks(snapshot.settings?.ui, current));
     }
     if (snapshot.models?.length) setModels(snapshot.models);
+    if (snapshot.allModels?.length) setAllModels(snapshot.allModels);
     if (snapshot.gpus?.length) setGpus(snapshot.gpus);
     if (snapshot.microphones?.length) setMicrophones(snapshot.microphones);
     if (snapshot.inputChannels?.length) setInputChannels(snapshot.inputChannels);
@@ -405,8 +418,25 @@ export default function App() {
   }, []);
 
   const modelLabel = useCallback((value: string) => {
-    return models.find((item) => item.value === value)?.label || value;
-  }, [models]);
+    return allModels.find((item) => item.value === value)?.label || models.find((item) => item.value === value)?.label || value;
+  }, [allModels, models]);
+
+  const modelsForGpu = useCallback((gpuValue: string) => {
+    let allowed: Set<string> | null = null;
+    if (gpuValue === "nvidia_api") allowed = NVIDIA_MODEL_VALUES;
+    if (gpuValue === "groq_api" || gpuValue === "grok_api") allowed = GROQ_MODEL_VALUES;
+    if (!allowed && !API_GPU_VALUES.has(gpuValue)) {
+      allowed = new Set(allModels.map((item) => item.value).filter((value) => !NVIDIA_MODEL_VALUES.has(value) && !GROQ_MODEL_VALUES.has(value)));
+    }
+    const source = allModels.length ? allModels : DEFAULT_MODELS;
+    return allowed ? source.filter((item) => allowed.has(item.value)) : source;
+  }, [allModels]);
+
+  const defaultModelForGpu = useCallback((gpuValue: string) => {
+    if (gpuValue === "nvidia_api") return "nvidia/parakeet-tdt-0.6b-v3";
+    if (gpuValue === "groq_api" || gpuValue === "grok_api") return "whisper-large-v3-turbo";
+    return "deepdml/faster-whisper-large-v3-turbo-ct2";
+  }, []);
 
   const needsLocalModelDownloadConfirm = useCallback(async (modelValue: string) => {
     if (API_GPU_VALUES.has(gpu) || !window.whisperer?.modelCacheStatus) return false;
@@ -434,10 +464,12 @@ export default function App() {
   }, [applySnapshot, confirmLocalModelDownload, needsLocalModelDownloadConfirm]);
 
   const setGpu = useCallback(async (value: string) => {
+    const allowedModels = modelsForGpu(value);
+    const nextModel = allowedModels.some((item) => item.value === model) ? model : defaultModelForGpu(value);
     if (!API_GPU_VALUES.has(value)) {
       if (window.whisperer?.localEngineStatus) {
         try {
-          const status = JSON.parse(await window.whisperer.localEngineStatus(model));
+          const status = JSON.parse(await window.whisperer.localEngineStatus(nextModel));
           if (!status.available) {
             window.alert(status.message || "Local GPU transcription is not available in this installation.");
             requestSnapshot();
@@ -452,15 +484,17 @@ export default function App() {
     }
     if (!API_GPU_VALUES.has(value) && window.whisperer?.modelCacheStatus) {
       try {
-        const payload = JSON.parse(await window.whisperer.modelCacheStatus(model));
-        if (!payload.cached && !confirmLocalModelDownload(model)) return;
+        const payload = JSON.parse(await window.whisperer.modelCacheStatus(nextModel));
+        if (!payload.cached && !confirmLocalModelDownload(nextModel)) return;
       } catch {
-        if (!confirmLocalModelDownload(model)) return;
+        if (!confirmLocalModelDownload(nextModel)) return;
       }
     }
+    setModels(allowedModels);
+    setModelState(nextModel);
     setGpuState(value);
     window.whisperer?.setGpu?.(value).then(applySnapshot).catch(() => {});
-  }, [applySnapshot, confirmLocalModelDownload, model, requestSnapshot]);
+  }, [applySnapshot, confirmLocalModelDownload, defaultModelForGpu, model, modelsForGpu, requestSnapshot]);
 
   const setMic = useCallback((value: string) => {
     setMicState(value);

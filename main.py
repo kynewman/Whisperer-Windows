@@ -85,8 +85,11 @@ from PyQt6.QtWidgets import QApplication
 
 from core.audio import AudioRecorder
 from core.transcriber import (
+    GROQ_WHISPER_TURBO_MODEL,
     NVIDIA_RIVA_CTC_MODEL,
+    NVIDIA_RIVA_STREAMING_MODEL,
     NVIDIA_RIVA_TDT_MODEL,
+    NVIDIA_RIVA_TDT_V3_MODEL,
     NvidiaStreamingTranscriber,
     load_model,
     nvidia_riva_model_supports_streaming,
@@ -673,6 +676,12 @@ class WhisperApp:
 
     def _provider_model(self, stt_provider: str, mode) -> str | None:
         mode_model = str(getattr(mode, "stt_model", "") or "").strip()
+        if stt_provider == "groq_whisper":
+            current_model = mode_model or (config.WHISPER_MODEL_SIZE or "").strip()
+            return current_model if current_model.startswith("whisper-large-v3") else GROQ_WHISPER_TURBO_MODEL
+        if stt_provider == "nvidia_parakeet":
+            current_model = mode_model or (config.WHISPER_MODEL_SIZE or "").strip()
+            return current_model if current_model.startswith("nvidia/parakeet") else config.WHISPER_MODEL_SIZE
         if mode_model:
             return mode_model
         if stt_provider in {"local", "nvidia_parakeet"}:
@@ -1757,29 +1766,29 @@ class WhisperApp:
         results: list[dict] = []
         if nvidia_key:
             results.append(self._benchmark_candidate(
-                "NVIDIA Parakeet RNNT streaming",
+                "NVIDIA Parakeet RNNT 1.1B streaming",
                 "nvidia_riva_streaming",
                 lambda: transcribe_nvidia_riva_streaming(
                     audio,
                     nvidia_key,
                     language=config.WHISPER_LANGUAGE,
-                    model=NVIDIA_RIVA_TDT_MODEL,
+                    model=NVIDIA_RIVA_STREAMING_MODEL,
                     chunk_ms=chunk_ms,
                 ),
             ))
             results.append(self._benchmark_candidate(
-                "NVIDIA Parakeet TDT 0.6B final",
+                "NVIDIA Parakeet TDT 0.6B v3 final",
                 "nvidia_parakeet",
                 lambda: transcribe_cloud(
                     audio,
                     "nvidia_parakeet",
                     nvidia_key,
                     language=config.WHISPER_LANGUAGE,
-                    model=NVIDIA_RIVA_TDT_MODEL,
+                    model=NVIDIA_RIVA_TDT_V3_MODEL,
                 ),
             ))
             results.append(self._benchmark_candidate(
-                "NVIDIA Parakeet CTC 0.6B final",
+                "NVIDIA Parakeet CTC 1.1B final",
                 "nvidia_parakeet",
                 lambda: transcribe_cloud(
                     audio,
@@ -1791,18 +1800,36 @@ class WhisperApp:
             ))
         else:
             results.extend([
-                _missing("NVIDIA Parakeet RNNT streaming", "nvidia_riva_streaming", "NVIDIA"),
-                _missing("NVIDIA Parakeet TDT 0.6B final", "nvidia_parakeet", "NVIDIA"),
-                _missing("NVIDIA Parakeet CTC 0.6B final", "nvidia_parakeet", "NVIDIA"),
+                _missing("NVIDIA Parakeet RNNT 1.1B streaming", "nvidia_riva_streaming", "NVIDIA"),
+                _missing("NVIDIA Parakeet TDT 0.6B v3 final", "nvidia_parakeet", "NVIDIA"),
+                _missing("NVIDIA Parakeet CTC 1.1B final", "nvidia_parakeet", "NVIDIA"),
             ])
         if groq_key:
             results.append(self._benchmark_candidate(
                 "Groq Whisper v3 Turbo",
                 "groq_whisper",
-                lambda: transcribe_cloud(audio, "groq_whisper", groq_key, language=config.WHISPER_LANGUAGE),
+                lambda: transcribe_cloud(
+                    audio,
+                    "groq_whisper",
+                    groq_key,
+                    language=config.WHISPER_LANGUAGE,
+                    model=GROQ_WHISPER_TURBO_MODEL,
+                ),
+            ))
+            results.append(self._benchmark_candidate(
+                "Groq Whisper Large v3",
+                "groq_whisper",
+                lambda: transcribe_cloud(
+                    audio,
+                    "groq_whisper",
+                    groq_key,
+                    language=config.WHISPER_LANGUAGE,
+                    model="whisper-large-v3",
+                ),
             ))
         else:
             results.append(_missing("Groq Whisper v3 Turbo", "groq_whisper", "Groq"))
+            results.append(_missing("Groq Whisper Large v3", "groq_whisper", "Groq"))
         if openai_key:
             results.append(self._benchmark_candidate(
                 "OpenAI speech",

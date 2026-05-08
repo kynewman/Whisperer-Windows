@@ -116,7 +116,7 @@ export default function HomePage({
           <span style={{ width: 1, height: 22, background: "var(--line)" }} />
           <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Model</span>
           <Select value={model} onChange={setModel} options={models} width={280} />
-          <span style={{ fontSize: 12, color: "var(--ink-3)", marginLeft: 6 }}>GPU</span>
+          <span style={{ fontSize: 12, color: "var(--ink-3)", marginLeft: 6 }}>Speech Engine</span>
           <Select value={gpu} onChange={setGpu} options={gpus} width={280} />
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>Changing either restarts the engine.</span>

@@ -1,8 +1,9 @@
-"""
-Shared filesystem locations for user data.
+"""Filesystem locations for Whisperer runtime state.
 
-Runtime data belongs outside the project folder so packaged builds and source
-checkouts do not mix user state with application code.
+The application code can live in a source checkout, a PyInstaller ``_internal``
+folder, or a portable install. User data should not live beside any of those
+locations, so every database, cache, and log path is rooted in a per-user app
+data directory unless an explicit environment override is provided.
 """
 
 from __future__ import annotations
@@ -10,56 +11,63 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 
 APP_NAME = "Whisperer Windows"
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def get_app_data_dir() -> str:
-    """Return the per-user app data directory, creating it if needed."""
-    candidates = [
+def _candidate_dirs() -> list[Path]:
+    values = [
         os.environ.get("WHISPERER_APP_DATA_DIR", ""),
         os.path.join(os.environ.get("APPDATA", ""), APP_NAME),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), APP_NAME),
-        os.path.join(os.path.expanduser("~"), "AppData", "Roaming", APP_NAME),
+        os.path.join(Path.home(), "AppData", "Roaming", APP_NAME),
         os.path.join(tempfile.gettempdir(), APP_NAME),
     ]
-    for path in candidates:
-        if not path:
-            continue
+    return [Path(value) for value in values if value]
+
+
+def _first_writable(candidates: list[Path]) -> Path:
+    for candidate in candidates:
         try:
-            os.makedirs(path, exist_ok=True)
-            return path
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
         except OSError:
             continue
-    return os.getcwd()
+    return Path.cwd()
+
+
+def get_app_data_dir() -> str:
+    """Return the writable per-user data root."""
+    return str(_first_writable(_candidate_dirs()))
 
 
 def get_data_dir() -> str:
-    """Return the app data directory used for databases and generated files."""
-    path = os.path.join(get_app_data_dir(), "data")
-    os.makedirs(path, exist_ok=True)
-    return path
+    """Return the directory used for SQLite databases and generated data."""
+    data_dir = Path(get_app_data_dir()) / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir)
 
 
 def get_dictionary_db_path() -> str:
-    """
-    Return the user dictionary database path.
+    """Return the user dictionary database path.
 
-    If an older repo-local database exists and the app-data database does not,
-    copy it forward once so existing learned terms survive the migration.
+    Older development builds stored ``data/dictionary.db`` in the project root.
+    If that legacy database exists and the app-data database does not, copy it
+    forward once so learned vocabulary survives the migration.
     """
-    db_path = os.path.join(get_data_dir(), "dictionary.db")
-    legacy_path = os.path.join(PROJECT_ROOT, "data", "dictionary.db")
-    if not os.path.exists(db_path) and os.path.exists(legacy_path):
+    target = Path(get_data_dir()) / "dictionary.db"
+    legacy = PROJECT_ROOT / "data" / "dictionary.db"
+    if not target.exists() and legacy.exists():
         try:
-            shutil.copy2(legacy_path, db_path)
+            shutil.copy2(legacy, target)
         except OSError:
             pass
-    return db_path
+    return str(target)
 
 
 def database_path() -> str:
     """Return the main application database path."""
-    return os.path.join(get_app_data_dir(), "whisperer.db")
+    return str(Path(get_app_data_dir()) / "whisperer.db")

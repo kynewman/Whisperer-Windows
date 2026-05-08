@@ -92,24 +92,51 @@ class _DwmMargins(ctypes.Structure):
 MODEL_OPTIONS = [
     {
         "value": "nvidia/parakeet-tdt-0.6b-v2",
-        "label": "NVIDIA Parakeet TDT 0.6B RNNT streaming",
+        "label": "NVIDIA Parakeet TDT 0.6B v2",
         "size": "0.6 B",
         "badge": "Local",
-        "speed": "Streaming",
+        "speed": "Fast",
+        "hint": "Fast",
     },
     {
-        "value": "nvidia/parakeet-ctc-0.6b",
-        "label": "NVIDIA Parakeet CTC 0.6B (RNNT streaming)",
+        "value": "nvidia/parakeet-tdt-0.6b-v3",
+        "label": "NVIDIA Parakeet TDT 0.6B v3",
         "size": "0.6 B",
         "badge": "Local",
-        "speed": "Streaming",
+        "speed": "Accurate",
+        "hint": "Newer",
     },
     {
-        "value": "nvidia/parakeet-unified-en-0.6b",
-        "label": "NVIDIA Parakeet Unified 0.6B (RNNT streaming)",
-        "size": "0.6 B",
-        "badge": "Local",
+        "value": "nvidia/parakeet-ctc-1.1b-asr",
+        "label": "NVIDIA Parakeet CTC 1.1B",
+        "size": "1.1 B",
+        "badge": "NVIDIA",
+        "speed": "Accurate",
+        "hint": "Accurate",
+    },
+    {
+        "value": "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+        "label": "NVIDIA Parakeet RNNT 1.1B Multilingual",
+        "size": "1.1 B",
+        "badge": "NVIDIA",
         "speed": "Streaming",
+        "hint": "Streaming",
+    },
+    {
+        "value": "whisper-large-v3-turbo",
+        "label": "Groq Whisper Large v3 Turbo",
+        "size": "API",
+        "badge": "Groq",
+        "speed": "Fast",
+        "hint": "Fast",
+    },
+    {
+        "value": "whisper-large-v3",
+        "label": "Groq Whisper Large v3",
+        "size": "API",
+        "badge": "Groq",
+        "speed": "Accurate",
+        "hint": "Accurate",
     },
     {
         "value": "deepdml/faster-whisper-large-v3-turbo-ct2",
@@ -117,6 +144,7 @@ MODEL_OPTIONS = [
         "size": "1.6 B",
         "badge": "Local",
         "speed": "Balanced",
+        "hint": "Balanced",
     },
     {
         "value": "large-v3",
@@ -124,8 +152,22 @@ MODEL_OPTIONS = [
         "size": "1.55 B",
         "badge": "Local",
         "speed": "Accurate",
+        "hint": "Accurate",
     },
 ]
+NVIDIA_API_MODELS = {
+    "nvidia/parakeet-tdt-0.6b-v2",
+    "nvidia/parakeet-tdt-0.6b-v3",
+    "nvidia/parakeet-ctc-1.1b-asr",
+    "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+}
+GROQ_API_MODELS = {"whisper-large-v3-turbo", "whisper-large-v3"}
+LOCAL_MODEL_VALUES = {item["value"] for item in MODEL_OPTIONS} - NVIDIA_API_MODELS - GROQ_API_MODELS
+DEFAULT_MODEL_BY_GPU = {
+    NVIDIA_API_GPU_VALUE: "nvidia/parakeet-tdt-0.6b-v3",
+    GROQ_API_GPU_VALUE: "whisper-large-v3-turbo",
+    GROQ_API_LEGACY_GPU_VALUE: "whisper-large-v3-turbo",
+}
 
 
 def _react_index_candidates() -> list[str]:
@@ -1118,11 +1160,12 @@ class MainWindow(QMainWindow):
             "version": config.VERSION,
             "engineState": self._engine_state,
             "settings": self.settings,
-            "models": MODEL_OPTIONS,
+            "models": self._model_options_for_gpu(),
+            "allModels": MODEL_OPTIONS,
             "gpus": [{"value": value, "label": label} for label, value in self._gpu_options],
             "microphones": microphones,
             "inputChannels": self._load_input_channel_options(selected_microphone),
-            "selectedModel": self._current_model_value(),
+            "selectedModel": self._coerce_model_for_gpu(self._current_model_value()),
             "selectedGpu": self._current_gpu_value(),
             "selectedMicrophone": selected_microphone,
             "selectedInputChannel": str(self.settings.get("audio", {}).get("input_channel", 0) or 0),
@@ -1418,16 +1461,30 @@ from core.secrets import get_key
 finalize_last_dictation_wav()
 audio = load_last_dictation_audio()
 stt_provider = os.environ.get("WHISPERER_STT_PROVIDER")
-if stt_provider == "groq_whisper":
-    key = get_key("groq") or get_key("groq_whisper")
-    if not key:
-        raise RuntimeError("No Groq API key is configured.")
-    raw_text = transcribe_cloud(audio, "groq_whisper", key, language=config.WHISPER_LANGUAGE, prompt=get_prompt_words(80))
-elif stt_provider == "nvidia_parakeet":
-    key = get_key("nvidia") or get_key("nvidia_parakeet")
-    if not key:
-        raise RuntimeError("No NVIDIA API key is configured.")
-    raw_text = transcribe_cloud(audio, "nvidia_parakeet", key, language=config.WHISPER_LANGUAGE, prompt=get_prompt_words(80))
+        if stt_provider == "groq_whisper":
+            key = get_key("groq") or get_key("groq_whisper")
+            if not key:
+                raise RuntimeError("No Groq API key is configured.")
+            raw_text = transcribe_cloud(
+                audio,
+                "groq_whisper",
+                key,
+                language=config.WHISPER_LANGUAGE,
+                prompt=get_prompt_words(80),
+                model=config.WHISPER_MODEL_SIZE,
+            )
+        elif stt_provider == "nvidia_parakeet":
+            key = get_key("nvidia") or get_key("nvidia_parakeet")
+            if not key:
+                raise RuntimeError("No NVIDIA API key is configured.")
+            raw_text = transcribe_cloud(
+                audio,
+                "nvidia_parakeet",
+                key,
+                language=config.WHISPER_LANGUAGE,
+                prompt=get_prompt_words(80),
+                model=config.WHISPER_MODEL_SIZE,
+            )
 else:
     raw_text = transcribe(audio, context_words=get_prompt_words(80))
 final_text = apply_replacements(
@@ -1466,9 +1523,7 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         raise RuntimeError("Backup transcription finished without returning text.")
 
     def set_model(self, value: str) -> str:
-        valid_values = {item["value"] for item in MODEL_OPTIONS}
-        if value not in valid_values:
-            value = MODEL_OPTIONS[0]["value"]
+        value = self._coerce_model_for_gpu(value)
         self.settings.setdefault("startup", {})["default_model"] = value
         snapshot = self._save_and_emit()
         if self.process and self.process.poll() is None:
@@ -1479,7 +1534,9 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         valid_values = {gpu_value for _label, gpu_value in self._gpu_options}
         if value not in valid_values:
             value = NVIDIA_API_GPU_VALUE
-        self.settings.setdefault("startup", {})["gpu_device"] = value
+        startup = self.settings.setdefault("startup", {})
+        startup["gpu_device"] = value
+        startup["default_model"] = self._coerce_model_for_gpu(startup.get("default_model"), value)
         snapshot = self._save_and_emit()
         if self.process and self.process.poll() is None:
             self.restart_engine()
@@ -1666,6 +1723,31 @@ print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_te
         value = self.settings.get("startup", {}).get("default_model", MODEL_OPTIONS[0]["value"])
         valid_values = {item["value"] for item in MODEL_OPTIONS}
         return value if value in valid_values else MODEL_OPTIONS[0]["value"]
+
+    def _model_values_for_gpu(self, gpu_value: str | None = None) -> set[str]:
+        gpu = gpu_value or self._current_gpu_value()
+        if gpu == NVIDIA_API_GPU_VALUE:
+            return set(NVIDIA_API_MODELS)
+        if gpu in {GROQ_API_GPU_VALUE, GROQ_API_LEGACY_GPU_VALUE}:
+            return set(GROQ_API_MODELS)
+        return set(LOCAL_MODEL_VALUES)
+
+    def _default_model_for_gpu(self, gpu_value: str | None = None) -> str:
+        gpu = gpu_value or self._current_gpu_value()
+        if gpu in DEFAULT_MODEL_BY_GPU:
+            return DEFAULT_MODEL_BY_GPU[gpu]
+        return "deepdml/faster-whisper-large-v3-turbo-ct2"
+
+    def _coerce_model_for_gpu(self, model_value: str | None, gpu_value: str | None = None) -> str:
+        allowed = self._model_values_for_gpu(gpu_value)
+        value = (model_value or "").strip()
+        if value in allowed:
+            return value
+        return self._default_model_for_gpu(gpu_value)
+
+    def _model_options_for_gpu(self, gpu_value: str | None = None) -> list[dict[str, str]]:
+        allowed = self._model_values_for_gpu(gpu_value)
+        return [item for item in MODEL_OPTIONS if item["value"] in allowed]
 
     def _current_gpu_value(self) -> str:
         value = str(self.settings.get("startup", {}).get("gpu_device", NVIDIA_API_GPU_VALUE))
@@ -2306,7 +2388,7 @@ print(json.dumps({"missing": missing}, separators=(",", ":")))
         self._engine_output_lines.clear()
         create_no_window = 0x08000000
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        model_arg = self._current_model_value()
+        model_arg = self._coerce_model_for_gpu(self._current_model_value())
 
         if getattr(sys, "frozen", False):
             gpu_value = self._current_gpu_value()
