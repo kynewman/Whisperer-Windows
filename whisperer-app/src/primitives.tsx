@@ -346,6 +346,7 @@ export const Input = ({
   type = "text",
   onBlur,
   autoFocus = false,
+  disabled = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -355,6 +356,7 @@ export const Input = ({
   type?: string;
   onBlur?: () => void;
   autoFocus?: boolean;
+  disabled?: boolean;
 }) => (
   <div style={{ position: "relative", display: "flex", alignItems: "center", ...style }}>
     {icon && (
@@ -369,6 +371,7 @@ export const Input = ({
       onBlur={onBlur}
       placeholder={placeholder}
       autoFocus={autoFocus}
+      disabled={disabled}
       style={{
         width: "100%",
         height: 32,
@@ -379,6 +382,7 @@ export const Input = ({
         fontFamily: "inherit",
         fontSize: 13,
         color: "var(--ink)",
+        opacity: disabled ? 0.58 : 1,
         outline: "none",
         letterSpacing: "-0.005em",
       }}

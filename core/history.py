@@ -170,7 +170,7 @@ def reprocess(dictation_id: int, mode_id: int | None = None) -> int | None:
         mode = get_mode(int(original["mode_id"]))
     app_name = original.get("app_name", "")
     window_title = original.get("window_title", "")
-    final_text = apply_replacements(format_transcription(raw, app_name, window_title, mode))
+    final_text = apply_replacements(format_transcription(raw, app_name, window_title, mode), app_name, window_title)
     return save_dictation(
         started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         duration_ms=int(original.get("duration_ms") or 0),

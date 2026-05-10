@@ -38,7 +38,16 @@ export type DictationBackup = {
 export type VocabularySnapshot = {
   wordCount: number;
   words: Array<{ word: string; count: number; source?: string; context?: string; last_seen?: string }>;
-  rules: Array<{ id: number; match_text: string; replace_with: string; enabled: number; whole_word: number; case_sensitive: number }>;
+  rules: Array<{
+    id: number;
+    match_text: string;
+    replace_with: string;
+    enabled: number;
+    whole_word: number;
+    case_sensitive: number;
+    scope_type?: "global" | "app" | "window";
+    scope_value?: string;
+  }>;
   error?: string;
 };
 export type HistoryItem = {

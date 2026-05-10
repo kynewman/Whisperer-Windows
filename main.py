@@ -124,6 +124,18 @@ from core.single_instance import acquire as acquire_single_instance
 from ui.overlay import WaveformOverlay
 
 
+def _apply_replacements_for_context(text: str, active_app: str = "", window_title: str = "") -> str:
+    """Apply scoped replacements, tolerating older bundled dictionary modules."""
+    try:
+        return apply_replacements(text, active_app, window_title)
+    except TypeError as exc:
+        message = str(exc)
+        if "positional" not in message and "argument" not in message:
+            raise
+        _LOG.warning("falling back to legacy replacement rules without app scope: %s", exc)
+        return apply_replacements(text)
+
+
 _SENTENCE_END_CHARS = ".?!\u2026"
 _SENTENCE_CLOSING_CHARS = "\"')]}\u201d\u2019\u00bb"
 _SMART_SPACING_CLIPBOARD_PROBE_SKIP_APPS = (
@@ -1363,7 +1375,11 @@ class WhisperApp:
                 return
 
             with timed("format_and_replacements"):
-                formatted = apply_replacements(format_transcription(raw_text, active_app, window_title, mode))
+                formatted = _apply_replacements_for_context(
+                    format_transcription(raw_text, active_app, window_title, mode),
+                    active_app,
+                    window_title,
+                )
 
             llm_processed = 0
             if mode.llm_enabled and mode.llm_provider:
@@ -1472,8 +1488,35 @@ class WhisperApp:
                 },
                 daemon=True,
             ).start()
+        except Exception as exc:
+            text = traceback.format_exc()
+            _LOG.error("dictation session failed\n%s", text)
+            try:
+                print(f"DICTATION_ERROR {exc}", flush=True)
+            except Exception:
+                pass
+            try:
+                self.signals.set_active.emit(False)
+                self.signals.set_locked.emit(False)
+                self.signals.set_processing.emit(False)
+                self.signals.set_status.emit(f"Error: {exc}")
+                time.sleep(1.2)
+                self.signals.hide_overlay.emit()
+            except Exception:
+                pass
+            try:
+                duration_ms = int((time.time() - t0) * 1000)
+                threading.Thread(
+                    target=self._save_dictation_background,
+                    args=(started_at, duration_ms, active_app, window_title, mode_id, "", ""),
+                    kwargs={"contexts": contexts, "error": str(exc), "stt_provider": stt_provider},
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
         finally:
             self._restore_audio_ducking()
+            self.signals.set_processing.emit(False)
             self._processing_job_active.clear()
             self._clear_longform_lock()
             if acquired_lock:
@@ -1951,12 +1994,14 @@ class WhisperApp:
             finalize_last_dictation_wav()
             audio = load_last_dictation_audio()
             raw_text = transcribe(audio, context_words=get_prompt_words(80))
-            final_text = apply_replacements(
+            final_text = _apply_replacements_for_context(
                 format_transcription(
                     raw_text,
                     active_app="last-dictation",
                     window_title="Last dictation backup",
-                )
+                ),
+                "last-dictation",
+                "Last dictation backup",
             )
             self._emit_backup_transcription_result(request_id, True, text=(final_text or raw_text).strip())
         except Exception as exc:

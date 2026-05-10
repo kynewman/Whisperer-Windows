@@ -84,7 +84,11 @@ def transcribe_file(
     if progress_callback:
         progress_callback(0.70)
 
-    final_text = apply_replacements(format_transcription(raw_text, active_app=path.suffix.lower(), window_title=path.name))
+    final_text = apply_replacements(
+        format_transcription(raw_text, active_app=path.suffix.lower(), window_title=path.name),
+        path.suffix.lower(),
+        path.name,
+    )
     if progress_callback:
         progress_callback(0.85)
 

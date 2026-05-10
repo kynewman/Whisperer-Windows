@@ -1,6 +1,12 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Btn, Card, Eyebrow, Icon, Input, SectionTitle, Stat } from "../primitives";
+import { Btn, Card, Eyebrow, Icon, Input, SectionTitle, Select, Stat } from "../primitives";
 import type { AppSnapshot, VocabularySnapshot } from "../App";
+
+const RULE_SCOPE_OPTIONS = [
+  { value: "global", label: "All apps" },
+  { value: "app", label: "App contains" },
+  { value: "window", label: "Window contains" },
+];
 
 export default function VocabPage({
   vocabulary,
@@ -13,6 +19,10 @@ export default function VocabPage({
   const [newWord, setNewWord] = useState("");
   const [newMatch, setNewMatch] = useState("");
   const [newReplace, setNewReplace] = useState("");
+  const [newScopeType, setNewScopeType] = useState("global");
+  const [newScopeValue, setNewScopeValue] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState<"word" | "rule" | "">("");
   const searchSeq = useRef(0);
   const deferredQ = useDeferredValue(q);
   const lc = deferredQ.toLowerCase();
@@ -45,7 +55,11 @@ export default function VocabPage({
   );
   const replacements = useMemo(
     () => (vocabulary.rules || []).filter(
-      (v) => !deferredQ || v.match_text.toLowerCase().includes(lc) || (v.replace_with || "").toLowerCase().includes(lc)
+      (v) => !deferredQ
+        || v.match_text.toLowerCase().includes(lc)
+        || (v.replace_with || "").toLowerCase().includes(lc)
+        || (v.scope_type || "global").toLowerCase().includes(lc)
+        || (v.scope_value || "").toLowerCase().includes(lc)
     ),
     [vocabulary.rules, deferredQ, lc]
   );
@@ -56,17 +70,60 @@ export default function VocabPage({
 
   const addWord = () => {
     const word = newWord.trim();
-    if (!word) return;
-    window.whisperer?.addVocabularyWord?.(word).then(applySnapshot).catch(() => {});
+    if (!word || busy) return;
+    const add = window.whisperer?.addVocabularyWord;
+    if (!add) {
+      setStatus("Vocabulary editing is not available in this build.");
+      return;
+    }
+    searchSeq.current += 1;
+    setBusy("word");
+    setStatus("");
     setNewWord("");
+    setQ("");
+    add(word)
+      .then((raw) => {
+        applySnapshot(raw);
+        setStatus(`Added "${word}".`);
+        window.whisperer?.vocabularySnapshot?.().then(applySnapshot).catch(() => {});
+      })
+      .catch(() => setStatus("Could not add the vocabulary word."))
+      .finally(() => setBusy(""));
   };
 
   const addRule = () => {
     const match = newMatch.trim();
-    if (!match) return;
-    window.whisperer?.addReplacementRule?.(match, newReplace).then(applySnapshot).catch(() => {});
+    const scopeValue = newScopeType === "global" ? "" : newScopeValue.trim();
+    if (!match || busy) return;
+    if (newScopeType !== "global" && !scopeValue) {
+      setStatus("Add an app or window match for this scoped rule.");
+      return;
+    }
+    const add = window.whisperer?.addReplacementRule;
+    if (!add) {
+      setStatus("Replacement rules are not available in this build.");
+      return;
+    }
+    searchSeq.current += 1;
+    setBusy("rule");
+    setStatus("");
     setNewMatch("");
     setNewReplace("");
+    if (newScopeType !== "global") setNewScopeValue("");
+    setQ("");
+    add(match, newReplace, newScopeType, scopeValue)
+      .then((raw) => {
+        applySnapshot(raw);
+        setStatus(`Added replacement rule for "${match}".`);
+        window.whisperer?.vocabularySnapshot?.().then(applySnapshot).catch(() => {});
+      })
+      .catch(() => setStatus("Could not add the replacement rule."))
+      .finally(() => setBusy(""));
+  };
+
+  const scopeLabel = (type?: string, value?: string) => {
+    if (!type || type === "global" || !value) return "All apps";
+    return type === "window" ? `Window: ${value}` : `App: ${value}`;
   };
 
   return (
@@ -93,7 +150,12 @@ export default function VocabPage({
         </div>
       </Card>
 
-      <Input icon="search" placeholder="Search vocabulary..." value={q} onChange={setQ} style={{ marginBottom: 16 }} />
+      <Input icon="search" placeholder="Search vocabulary..." value={q} onChange={setQ} style={{ marginBottom: status ? 8 : 16 }} />
+      {status && (
+        <div style={{ fontSize: 12.5, color: status.startsWith("Could not") ? "var(--rec)" : "var(--ink-3)", marginBottom: 16 }}>
+          {status}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <div>
@@ -104,7 +166,7 @@ export default function VocabPage({
           <Card padding={0}>
             <div style={{ display: "flex", gap: 8, padding: 12, borderBottom: "1px solid var(--line-soft)" }}>
               <Input placeholder="Add Codex, RTX 5090, WriterDuet..." value={newWord} onChange={setNewWord} style={{ flex: 1 }} />
-              <Btn variant="ghost" size="sm" icon="plus" onClick={addWord}>Add term</Btn>
+              <Btn variant="ghost" size="sm" icon="plus" onClick={addWord} disabled={busy === "word"}>Add term</Btn>
             </div>
             <div
               style={{
@@ -154,18 +216,25 @@ export default function VocabPage({
         <div>
           <SectionTitle>Replacement rules</SectionTitle>
           <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8, marginTop: -6, lineHeight: 1.5 }}>
-            Find a phrase and replace it with another before paste.
+            Find a phrase and replace it before paste, either everywhere or only in matching apps.
           </div>
           <Card padding={0}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, padding: 12, borderBottom: "1px solid var(--line-soft)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px minmax(110px, 1fr) auto", gap: 8, padding: 12, borderBottom: "1px solid var(--line-soft)", alignItems: "center" }}>
               <Input placeholder="Find" value={newMatch} onChange={setNewMatch} />
               <Input placeholder="Replace with" value={newReplace} onChange={setNewReplace} />
-              <Btn variant="ghost" size="sm" icon="plus" onClick={addRule}>Add rule</Btn>
+              <Select value={newScopeType} onChange={setNewScopeType} options={RULE_SCOPE_OPTIONS} width="100%" small />
+              <Input
+                placeholder={newScopeType === "window" ? "Gmail, Timeline..." : newScopeType === "app" ? "resolve.exe, chrome..." : "Everywhere"}
+                value={newScopeValue}
+                onChange={setNewScopeValue}
+                disabled={newScopeType === "global"}
+              />
+              <Btn variant="ghost" size="sm" icon="plus" onClick={addRule} disabled={busy === "rule"}>Add rule</Btn>
             </div>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 24px 1fr 70px",
+                gridTemplateColumns: "1fr 24px 1fr 120px 70px",
                 padding: "11px 16px",
                 borderBottom: "1px solid var(--line)",
                 fontSize: 11,
@@ -180,6 +249,7 @@ export default function VocabPage({
               <span>Find</span>
               <span></span>
               <span>Replace with</span>
+              <span>Scope</span>
               <span style={{ textAlign: "right" }}>Enabled</span>
             </div>
             {visibleReplacements.map((v, i) => (
@@ -187,7 +257,7 @@ export default function VocabPage({
                 key={v.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 24px 1fr 70px",
+                  gridTemplateColumns: "1fr 24px 1fr 120px 70px",
                   padding: "11px 16px",
                   alignItems: "center",
                   gap: 4,
@@ -199,6 +269,7 @@ export default function VocabPage({
                   <Icon name="chevron" size={12} />
                 </span>
                 <span className="mono" style={{ fontSize: 12.5, color: "var(--accent-ink)", fontWeight: 500 }}>{v.replace_with}</span>
+                <span style={{ fontSize: 12, color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{scopeLabel(v.scope_type, v.scope_value)}</span>
                 <span style={{ fontSize: 12, color: "var(--ink-3)", textAlign: "right" }}>{v.enabled ? "yes" : "no"}</span>
               </div>
             ))}

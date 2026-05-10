@@ -97,6 +97,15 @@ class DictionaryTests(unittest.TestCase):
 
         self.assertEqual(result, "i love New York City and New York")
 
+    def test_replacement_rules_can_be_scoped_to_apps(self) -> None:
+        dictionary.add_replacement_rule("resolve", "resolve-global")
+        dictionary.add_replacement_rule("resolve", "DaVinci Resolve", scope_type="app", scope_value="resolve.exe")
+        dictionary.add_replacement_rule("draft", "email draft", scope_type="window", scope_value="gmail")
+
+        self.assertEqual(dictionary.apply_replacements("open resolve", "notepad.exe", "Notes"), "open resolve-global")
+        self.assertEqual(dictionary.apply_replacements("open resolve", "resolve.exe", "Timeline"), "open DaVinci Resolve")
+        self.assertEqual(dictionary.apply_replacements("send draft", "chrome.exe", "Gmail"), "send email draft")
+
 
 class HistoryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -136,6 +145,16 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(formatter.format_transcription("hello , world"), "Hello, world.")
         self.assertEqual(formatter.format_transcription("testing,"), "Testing.")
         self.assertEqual(formatter.format_transcription("testing,."), "Testing.")
+        self.assertEqual(
+            formatter.format_transcription("for, some, reason, this, comma, issue, got, a, lot, worse"),
+            "For some reason this comma issue got a lot worse.",
+        )
+        self.assertEqual(formatter.format_transcription("what's, the, best, way, to, get, into, the, city"), "What's the best way to get into the city.")
+        self.assertEqual(formatter.format_transcription("alright, is, it, any, better"), "Alright is it any better.")
+        self.assertEqual(formatter.format_transcription("fix, it"), "Fix it.")
+        self.assertEqual(formatter.format_transcription("hello, world"), "Hello, world.")
+        self.assertEqual(formatter.format_transcription("I bought apples, oranges, bananas, and grapes"), "I bought apples, oranges, bananas, and grapes.")
+        self.assertEqual(formatter.format_transcription("version 6, 0, 10"), "Version 6,0,10.")
         marker = modes.get_mode_by_name("DaVinci Marker")
         self.assertEqual(formatter.format_transcription("Cut, now!", mode=marker), "cut now")
         custom = modes.Mode(name="Lower", formatting_prompt="lowercase and no punctuation")

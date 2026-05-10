@@ -5,7 +5,7 @@ All tuneable settings live here so you never have to dig through other files.
 
 import os
 
-VERSION = "6.0.10"
+VERSION = "6.0.11"
 
 # =============================================================================
 # Paths

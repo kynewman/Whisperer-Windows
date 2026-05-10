@@ -15,7 +15,7 @@ from core.term_filter import is_useful_term, normalize_term
 
 _LOCK = threading.RLock()
 _prompt_cache: dict[int, str] = {}
-_replacement_cache: list[tuple[Pattern[str], str]] | None = None
+_replacement_cache: list[tuple[Pattern[str], str, str, str, str]] | None = None
 
 
 def _invalidate_caches() -> None:
@@ -36,6 +36,68 @@ def _get_connection() -> sqlite3.Connection:
     except sqlite3.DatabaseError:
         pass
     return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _replacement_rules_need_scope_migration(conn: sqlite3.Connection) -> bool:
+    columns = _table_columns(conn, "replacement_rules")
+    if "scope_type" not in columns or "scope_value" not in columns:
+        return True
+    for index in conn.execute("PRAGMA index_list(replacement_rules)"):
+        if not int(index["unique"]):
+            continue
+        names = [str(row["name"]) for row in conn.execute(f"PRAGMA index_info({index['name']})")]
+        if names == ["match_text"]:
+            return True
+    return False
+
+
+def _ensure_replacement_rule_scope_schema(conn: sqlite3.Connection) -> None:
+    if not _replacement_rules_need_scope_migration(conn):
+        return
+    columns = _table_columns(conn, "replacement_rules")
+    scope_type_expr = "COALESCE(NULLIF(scope_type, ''), 'global')" if "scope_type" in columns else "'global'"
+    scope_value_expr = "COALESCE(scope_value, '')" if "scope_value" in columns else "''"
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS replacement_rules_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_text TEXT NOT NULL,
+            replace_with TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            whole_word INTEGER DEFAULT 1,
+            case_sensitive INTEGER DEFAULT 0,
+            scope_type TEXT DEFAULT 'global',
+            scope_value TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(match_text, scope_type, scope_value)
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO replacement_rules_new
+            (id, match_text, replace_with, enabled, whole_word, case_sensitive, scope_type, scope_value, created_at, updated_at)
+        SELECT
+            id,
+            match_text,
+            replace_with,
+            enabled,
+            whole_word,
+            case_sensitive,
+            {scope_type_expr},
+            {scope_value_expr},
+            created_at,
+            updated_at
+        FROM replacement_rules
+        """
+    )
+    conn.execute("DROP TABLE replacement_rules")
+    conn.execute("ALTER TABLE replacement_rules_new RENAME TO replacement_rules")
 
 
 def init_db() -> None:
@@ -60,20 +122,25 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS replacement_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                match_text TEXT UNIQUE NOT NULL,
+                match_text TEXT NOT NULL,
                 replace_with TEXT NOT NULL,
                 enabled INTEGER DEFAULT 1,
                 whole_word INTEGER DEFAULT 1,
                 case_sensitive INTEGER DEFAULT 0,
+                scope_type TEXT DEFAULT 'global',
+                scope_value TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(match_text, scope_type, scope_value)
             )
             """
         )
+        _ensure_replacement_rule_scope_schema(conn)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_words_count ON words(count DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_words_source ON words(source)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_words_last_seen ON words(last_seen DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_replacement_rules_enabled ON replacement_rules(enabled)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_replacement_rules_scope ON replacement_rules(scope_type, scope_value)")
         conn.commit()
     finally:
         conn.close()
@@ -221,9 +288,12 @@ def add_replacement_rule(
     whole_word: bool = True,
     case_sensitive: bool = False,
     enabled: bool = True,
+    scope_type: str = "global",
+    scope_value: str = "",
 ) -> int | None:
     match_text = " ".join((match_text or "").strip().split())
     replace_with = (replace_with or "").strip()
+    scope_type, scope_value = _normalize_scope(scope_type, scope_value)
     if not match_text:
         return None
 
@@ -234,21 +304,26 @@ def add_replacement_rule(
             cursor.execute(
                 """
                 INSERT INTO replacement_rules
-                    (match_text, replace_with, enabled, whole_word, case_sensitive, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(match_text) DO UPDATE SET
+                    (match_text, replace_with, enabled, whole_word, case_sensitive, scope_type, scope_value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(match_text, scope_type, scope_value) DO UPDATE SET
                     replace_with = excluded.replace_with,
                     enabled = excluded.enabled,
                     whole_word = excluded.whole_word,
                     case_sensitive = excluded.case_sensitive,
+                    scope_type = excluded.scope_type,
+                    scope_value = excluded.scope_value,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (match_text, replace_with, int(enabled), int(whole_word), int(case_sensitive)),
+                (match_text, replace_with, int(enabled), int(whole_word), int(case_sensitive), scope_type, scope_value),
             )
             conn.commit()
             rule_id = cursor.lastrowid
             if not rule_id:
-                row = cursor.execute("SELECT id FROM replacement_rules WHERE match_text = ?", (match_text,)).fetchone()
+                row = cursor.execute(
+                    "SELECT id FROM replacement_rules WHERE match_text = ? AND scope_type = ? AND scope_value = ?",
+                    (match_text, scope_type, scope_value),
+                ).fetchone()
                 rule_id = row["id"] if row else None
         finally:
             conn.close()
@@ -271,7 +346,7 @@ def get_replacement_rules(enabled_only: bool = False, search: str = "") -> list[
     conn = _get_connection()
     try:
         query = """
-            SELECT id, match_text, replace_with, enabled, whole_word, case_sensitive
+            SELECT id, match_text, replace_with, enabled, whole_word, case_sensitive, scope_type, scope_value
             FROM replacement_rules
         """
         clauses: list[str] = []
@@ -281,27 +356,66 @@ def get_replacement_rules(enabled_only: bool = False, search: str = "") -> list[
         search = (search or "").strip()
         if search:
             pattern = f"%{search.lower()}%"
-            clauses.append("(lower(match_text) LIKE ? OR lower(replace_with) LIKE ?)")
-            params.extend([pattern, pattern])
+            clauses.append(
+                "(lower(match_text) LIKE ? OR lower(replace_with) LIKE ? OR lower(scope_type) LIKE ? OR lower(scope_value) LIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern, pattern])
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY LENGTH(match_text) DESC, match_text ASC"
+        query += """
+            ORDER BY
+                CASE WHEN scope_type = 'global' THEN 1 ELSE 0 END,
+                LENGTH(match_text) DESC,
+                match_text ASC
+        """
         return [dict(row) for row in conn.execute(query, params)]
     finally:
         conn.close()
 
 
-def _compile_replacements() -> list[tuple[Pattern[str], str]]:
-    compiled: list[tuple[Pattern[str], str]] = []
+def _normalize_scope(scope_type: str = "global", scope_value: str = "") -> tuple[str, str]:
+    normalized_type = (scope_type or "global").strip().lower().replace("-", "_")
+    if normalized_type not in {"global", "app", "window"}:
+        normalized_type = "global"
+    normalized_value = " ".join((scope_value or "").strip().split())
+    if normalized_type == "global" or not normalized_value:
+        return "global", ""
+    return normalized_type, normalized_value
+
+
+def _scope_matches(scope_type: str, scope_value: str, active_app: str = "", window_title: str = "") -> bool:
+    scope_type, scope_value = _normalize_scope(scope_type, scope_value)
+    if scope_type == "global":
+        return True
+    needle = scope_value.lower()
+    app = (active_app or "").lower()
+    title = (window_title or "").lower()
+    if scope_type == "app":
+        return needle in app or needle in title
+    if scope_type == "window":
+        return needle in title
+    return False
+
+
+def _compile_replacements() -> list[tuple[Pattern[str], str, str, str, str]]:
+    compiled: list[tuple[Pattern[str], str, str, str, str]] = []
     for rule in get_replacement_rules(enabled_only=True):
         flags = 0 if rule["case_sensitive"] else re.IGNORECASE
         escaped = re.escape(rule["match_text"])
         pattern = rf"(?<!\w){escaped}(?!\w)" if rule["whole_word"] else escaped
-        compiled.append((re.compile(pattern, flags=flags), rule["replace_with"]))
+        compiled.append(
+            (
+                re.compile(pattern, flags=flags),
+                rule["replace_with"],
+                rule.get("scope_type") or "global",
+                rule.get("scope_value") or "",
+                pattern,
+            )
+        )
     return compiled
 
 
-def apply_replacements(text: str) -> str:
+def apply_replacements(text: str, active_app: str = "", window_title: str = "") -> str:
     if not text:
         return text
     global _replacement_cache
@@ -310,7 +424,15 @@ def apply_replacements(text: str) -> str:
             _replacement_cache = _compile_replacements()
         replacements = list(_replacement_cache)
     result = text
-    for pattern, replace_with in replacements:
+    scoped_matches: set[tuple[str, int]] = set()
+    for pattern, replace_with, scope_type, scope_value, pattern_key in replacements:
+        if not _scope_matches(scope_type, scope_value, active_app, window_title):
+            continue
+        shadow_key = (pattern_key, pattern.flags)
+        if scope_type == "global" and shadow_key in scoped_matches:
+            continue
+        if scope_type != "global" and pattern.search(result):
+            scoped_matches.add(shadow_key)
         result = pattern.sub(replace_with, result)
     return result
 

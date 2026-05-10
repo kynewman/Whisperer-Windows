@@ -25,7 +25,7 @@ declare global {
       setMicrophone?: (value: string) => Promise<string>;
       setInputChannel?: (value: string) => Promise<string>;
       addVocabularyWord?: (word: string) => Promise<string>;
-      addReplacementRule?: (matchText: string, replaceWith: string) => Promise<string>;
+      addReplacementRule?: (matchText: string, replaceWith: string, scopeType?: string, scopeValue?: string) => Promise<string>;
       copyText?: (text: string) => Promise<string>;
       transcribeLastDictation?: () => Promise<string>;
       runSttBenchmark?: () => Promise<string>;

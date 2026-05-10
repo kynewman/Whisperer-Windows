@@ -41,6 +41,18 @@ To build the optional installer after PyInstaller finishes:
 iscc installer.iss
 ```
 
+## Version 6.0.11
+
+Whisperer 6.0.11 fixes a post-transcription engine crash that could leave the
+overlay stuck in a loading state forever. Dictation worker failures now reset
+the overlay, log the exception, and save a failed history item instead of
+silently trapping the UI.
+
+This release also expands replacement rules so they can be scoped to all apps,
+apps/process names, or window titles, and tightens transcript cleanup for the
+pathological comma cadence where speech models insert commas between nearly
+every word.
+
 ## Version 6.0.10
 
 Whisperer 6.0.10 promotes the rewrite experiment into the public release. It

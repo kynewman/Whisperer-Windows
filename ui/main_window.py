@@ -335,8 +335,9 @@ class Bridge(QObject):
         return self._window.add_vocabulary_word(word)
 
     @pyqtSlot(str, str, result=str)
-    def addReplacementRule(self, match_text: str, replace_with: str) -> str:
-        return self._window.add_replacement_rule(match_text, replace_with)
+    @pyqtSlot(str, str, str, str, result=str)
+    def addReplacementRule(self, match_text: str, replace_with: str, scope_type: str = "global", scope_value: str = "") -> str:
+        return self._window.add_replacement_rule(match_text, replace_with, scope_type, scope_value)
 
     @pyqtSlot(str, result=str)
     def copyText(self, text: str) -> str:
@@ -441,7 +442,9 @@ _BRIDGE_SHIM = r"""
         setMicrophone: function(value) { return callResult("setMicrophone", value); },
         setInputChannel: function(value) { return callResult("setInputChannel", value); },
         addVocabularyWord: function(word) { return callResult("addVocabularyWord", word); },
-        addReplacementRule: function(matchText, replaceWith) { return callResult("addReplacementRule", matchText, replaceWith); },
+        addReplacementRule: function(matchText, replaceWith, scopeType, scopeValue) {
+          return callResult("addReplacementRule", matchText, replaceWith, scopeType || "global", scopeValue || "");
+        },
         copyText: function(text) { return callResult("copyText", text); },
         transcribeLastDictation: function() { return callResult("transcribeLastDictation"); },
         runSttBenchmark: function() { return callResult("runSttBenchmark"); },
@@ -1492,7 +1495,9 @@ final_text = apply_replacements(
         raw_text,
         active_app="last-dictation",
         window_title="Last dictation backup",
-    )
+    ),
+    "last-dictation",
+    "Last dictation backup",
 )
 print("WHISPERER_BACKUP_RESULT " + json.dumps({"text": final_text, "raw": raw_text}, ensure_ascii=False), flush=True)
 '''
@@ -2056,12 +2061,12 @@ print(json.dumps({"missing": missing}, separators=(",", ":")))
             add_word(word, source="manual")
         return self.vocabulary_snapshot_json()
 
-    def add_replacement_rule(self, match_text: str, replace_with: str) -> str:
+    def add_replacement_rule(self, match_text: str, replace_with: str, scope_type: str = "global", scope_value: str = "") -> str:
         match_text = (match_text or "").strip()
         if match_text:
             from core.dictionary import add_replacement_rule
 
-            add_replacement_rule(match_text, replace_with or "")
+            add_replacement_rule(match_text, replace_with or "", scope_type=scope_type, scope_value=scope_value)
         return self.vocabulary_snapshot_json()
 
     def _history_payload(self) -> dict[str, Any]:
